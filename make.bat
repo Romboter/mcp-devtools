@@ -35,16 +35,65 @@ if %ERRORLEVEL% NEQ 0 (
 echo Docker is running.
 
 REM Check if the Docker image exists, build if not
-docker image inspect mcp-devtools-dev > nul 2>&1
+docker image inspect mcp-devtools-dev:latest > nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo Docker image 'mcp-devtools-dev' not found.
     echo Building Docker image...
+    
+    REM Run docker build and capture exit code
     docker build -f Dockerfile.dev -t mcp-devtools-dev .
-    if %ERRORLEVEL% NEQ 0 (
-        echo Error: Failed to build Docker image.
+    set BUILD_EXIT_CODE=%ERRORLEVEL%
+    
+
+set RETRIES=0
+set MAX_RETRIES=10
+set WAIT_SECONDS=3
+
+:wait_for_image
+docker image inspect mcp-devtools-dev:latest > nul 2>&1
+set IMAGE_EXISTS=%ERRORLEVEL%
+@REM echo [DEBUG] Attempt !RETRIES! - IMAGE_EXISTS = !IMAGE_EXISTS!
+
+if !IMAGE_EXISTS! NEQ 0 (
+    set /a RETRIES+=1
+    if !RETRIES! GEQ !MAX_RETRIES! (
+        echo.
+        echo ERROR: Image 'mcp-devtools-dev:latest' did not appear after !MAX_RETRIES! retries.
+        echo --- Docker image list for debugging:
+        docker image ls mcp-devtools-dev
+        echo --- Docker build output above for troubleshooting.
         exit /b 1
     )
-    echo Docker image built successfully.
+    echo Image not yet available, waiting !WAIT_SECONDS! seconds then retrying...
+    timeout /t !WAIT_SECONDS! /nobreak > nul 2>&1
+    goto wait_for_image
+)
+
+@REM echo Docker image 'mcp-devtools-dev:latest' found after !RETRIES! attempts.
+    
+    REM Only fail if image still doesn't exist after retries
+    if !IMAGE_EXISTS! NEQ 0 (
+        echo Error: Docker image build failed - image not found after retries
+        echo Build exit code was: !BUILD_EXIT_CODE!
+        echo.
+        echo The build appeared to complete but the image is not available.
+        echo This might indicate a Docker daemon issue.
+        echo.
+        echo Troubleshooting tips:
+        echo 1. Check if Dockerfile.dev exists and is valid
+        echo 2. Ensure Docker has sufficient resources
+        echo 3. Try restarting Docker Desktop
+        echo 4. Check Docker logs for detailed error information
+        exit /b 1
+    ) else (
+        
+        echo Docker image built successfully.
+        
+        REM Show image details for verification
+        echo.
+        echo Image details:
+        docker image ls mcp-devtools-dev --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}"
+    )
     echo.
 )
 
