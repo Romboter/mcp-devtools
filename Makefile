@@ -24,6 +24,31 @@ build:
 		-X main.BuildDate=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")" \
 		.
 
+# Build for Windows (64-bit)
+.PHONY: build-windows
+build-windows:
+	mkdir -p bin
+	GOOS=windows GOARCH=amd64 $(GO) build $(GOFLAGS) -o $(BINARY_PATH).exe \
+		-ldflags "-X main.Version=$(shell git describe --tags --always --dirty 2>/dev/null || echo '0.1.0-dev') \
+		-X main.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo 'unknown') \
+		-X main.BuildDate=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+		.
+
+# Build for macOS (64-bit)
+.PHONY: build-macos
+build-macos:
+	mkdir -p bin
+	GOOS=darwin GOARCH=amd64 $(GO) build $(GOFLAGS) -o $(BINARY_PATH)-macos \
+		-ldflags "-X main.Version=$(shell git describe --tags --always --dirty 2>/dev/null || echo '0.1.0-dev') \
+		-X main.Commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo 'unknown') \
+		-X main.BuildDate=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+		.
+
+# Build for all platforms (Linux, Windows, macOS)
+.PHONY: build-all
+build-all: build build-windows build-macos
+	@echo "Built for all platforms"
+
 # Run the server with stdio transport (default)
 .PHONY: run
 run: build
@@ -132,6 +157,9 @@ help:
 	@echo "Available targets:"
 	@echo "  all          : Build the server (default)"
 	@echo "  build        : Build the server"
+	@echo "  build-windows: Build the server for Windows"
+	@echo "  build-macos  : Build the server for macOS"
+	@echo "  build-all    : Build the server for all platforms"
 	@echo "  run          : Run the server with stdio transport (default)"
 	@echo "  run-http     : Run the server with Streamable HTTP transport"
 	@echo "  test         : Run all tests (including external dependencies)"

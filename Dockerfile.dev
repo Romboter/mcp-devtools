@@ -1,0 +1,26 @@
+FROM golang:1.24-alpine
+
+# Install build tools and dependencies
+RUN apk add --no-cache \
+    git \
+    make \
+    python3 \
+    py3-pip \
+    gcc \
+    musl-dev \
+    libffi-dev \
+    openssl-dev \
+    python3-dev \
+    libxml2-dev \
+    libxslt-dev \
+    g++ \
+    cython
+
+# Set up working directory
+WORKDIR /app
+
+# Create a simple entrypoint script
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
