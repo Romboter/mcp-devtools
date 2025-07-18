@@ -60,7 +60,7 @@ test-fast:
 # Clean build artifacts
 .PHONY: clean
 clean:
-	rm -rf bin/
+	find bin -type f -name "$(BINARY_NAME)*" -exec rm -f {} +
 
 # Format code
 .PHONY: fmt
