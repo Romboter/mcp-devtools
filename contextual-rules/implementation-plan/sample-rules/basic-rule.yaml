@@ -1,0 +1,7 @@
+id: basic001
+description: A basic rule for testing purposes.
+rule: |
+  # Basic Rule
+  
+  This is a simple rule with minimal fields.
+  It only includes the required fields: id, description, and rule content.

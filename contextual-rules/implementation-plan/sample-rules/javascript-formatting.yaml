@@ -1,0 +1,51 @@
+id: js-formatting
+description: JavaScript code formatting guidelines
+language: javascript
+tags:
+  - formatting
+  - style-guide
+  - best-practices
+  - javascript
+rule: |
+  # JavaScript Formatting Guidelines
+  
+  ## Indentation
+  
+  - Use 2 spaces for indentation
+  - Do not use tabs
+  
+  ## Line Length
+  
+  - Maximum line length: 80 characters
+  - Break long lines at logical points
+  
+  ## Semicolons
+  
+  - Always use semicolons at the end of statements
+  - Do not rely on automatic semicolon insertion
+  
+  ## Quotes
+  
+  - Use single quotes for string literals
+  - Use template literals for string interpolation
+  
+  ## Spacing
+  
+  - Add a space after keywords: `if`, `for`, `while`, etc.
+  - Add spaces around operators: `+`, `-`, `*`, `/`, etc.
+  - No space between function name and parentheses
+  
+  ## Example
+  
+  ```javascript
+  // Good
+  function calculateArea(width, height) {
+    const area = width * height;
+    return area;
+  }
+  
+  // Bad
+  function calculateArea(width,height){
+    const area=width*height;
+    return area
+  }

@@ -1,0 +1,79 @@
+id: go-formatting
+description: Go formatting and style guidelines
+language: go
+tags:
+  - formatting
+  - style
+  - best-practices
+rule: |
+  # Go Formatting and Style Guidelines
+
+  ## Formatting
+
+  - Use `gofmt` or `goimports` to automatically format your code.
+  - Use tabs for indentation (Go standard).
+  - Keep lines under 100 characters when possible.
+
+  ## Naming Conventions
+
+  - Use camelCase for variable and function names.
+  - Use PascalCase for exported functions, variables, constants, and types.
+  - Use all lowercase for package names.
+  - Use acronyms consistently (e.g., `HTTPServer` not `HttpServer`).
+
+  ## Package Organization
+
+  - One package per directory.
+  - Package name should match the directory name.
+  - Main package should be in the root of the project.
+
+  ## Error Handling
+
+  - Check errors immediately after function calls.
+  - Return errors explicitly rather than using panics.
+  - Use error wrapping to add context: `fmt.Errorf("doing something: %w", err)`.
+
+  ## Example
+
+  ```go
+  package main
+
+  import (
+      "context"
+      "fmt"
+      "log"
+      "time"
+  )
+
+  // User represents a system user
+  type User struct {
+      ID        string
+      Name      string
+      CreatedAt time.Time
+  }
+
+  // GetUserByID retrieves a user by their ID
+  func GetUserByID(ctx context.Context, id string) (*User, error) {
+      if id == "" {
+          return nil, fmt.Errorf("user ID cannot be empty")
+      }
+      
+      // Simulate database lookup
+      user := &User{
+          ID:        id,
+          Name:      "Example User",
+          CreatedAt: time.Now(),
+      }
+      
+      return user, nil
+  }
+
+  func main() {
+      ctx := context.Background()
+      user, err := GetUserByID(ctx, "123")
+      if err != nil {
+          log.Fatalf("Error getting user: %v", err)
+      }
+      
+      fmt.Printf("Found user: %s\n", user.Name)
+  }

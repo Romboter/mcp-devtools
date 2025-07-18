@@ -1,0 +1,113 @@
+id: js-best-practices
+description: JavaScript best practices and coding standards
+language: javascript
+tags:
+  - best-practices
+  - coding-standards
+  - javascript
+rule: |
+  # JavaScript Best Practices
+
+  ## Modern JavaScript Features
+
+  - Use ES6+ features when possible (arrow functions, destructuring, spread/rest operators).
+  - Prefer `const` over `let` when variables won't be reassigned.
+  - Use template literals instead of string concatenation.
+  - Use async/await for asynchronous code instead of callbacks or raw promises.
+
+  ## Code Organization
+
+  - Keep functions small and focused on a single responsibility.
+  - Group related functions and variables together.
+  - Use modules to organize code into logical units.
+  - Export only what is necessary from modules.
+
+  ## Performance
+
+  - Avoid unnecessary re-renders in React components.
+  - Use memoization for expensive calculations.
+  - Be mindful of memory leaks, especially in event listeners and timers.
+  - Use appropriate data structures for the task at hand.
+
+  ## Error Handling
+
+  - Use try/catch blocks for error-prone code.
+  - Provide meaningful error messages.
+  - Consider using custom error classes for specific error types.
+  - Handle promise rejections properly.
+
+  ## Examples
+
+  ### Modern JavaScript Features
+
+  ```javascript
+  // Bad
+  var name = 'John';
+  var greeting = 'Hello, ' + name + '!';
+  
+  // Good
+  const name = 'John';
+  const greeting = `Hello, ${name}!`;
+  ```
+
+  ### Async/Await
+
+  ```javascript
+  // Bad
+  function fetchData() {
+    return fetch('/api/data')
+      .then(response => response.json())
+      .then(data => {
+        console.log(data);
+        return data;
+      })
+      .catch(error => {
+        console.error('Error fetching data:', error);
+        throw error;
+      });
+  }
+  
+  // Good
+  async function fetchData() {
+    try {
+      const response = await fetch('/api/data');
+      const data = await response.json();
+      console.log(data);
+      return data;
+    } catch (error) {
+      console.error('Error fetching data:', error);
+      throw error;
+    }
+  }
+  ```
+
+  ### Error Handling
+
+  ```javascript
+  // Custom error class
+  class ValidationError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = 'ValidationError';
+    }
+  }
+  
+  function validateUser(user) {
+    if (!user.name) {
+      throw new ValidationError('User name is required');
+    }
+    if (!user.email) {
+      throw new ValidationError('User email is required');
+    }
+    return true;
+  }
+  
+  try {
+    validateUser({ name: 'John' });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      console.error('Validation failed:', error.message);
+    } else {
+      console.error('Unexpected error:', error);
+    }
+  }

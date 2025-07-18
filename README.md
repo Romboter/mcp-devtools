@@ -65,6 +65,7 @@ graph TD
 | **[Memory](docs/tools/memory.md)**                               | Persistent knowledge graphs      | None                          | Store entities and relationships |
 | **[ShadCN UI](docs/tools/shadcn-ui.md)**                         | Component information            | None                          | Button, Dialog, Form components  |
 | **[American→English](docs/tools/american-to-english.md)**        | Convert to British spelling      | None                          | Organise, colour, centre         |
+| **[RulesHub](docs/tools/ruleshub.md)**                           | Contextual rules for AI agents   | None                          | Coding standards, best practices |
 
 👉 **[See detailed tool documentation](docs/tools/overview.md)**
 
