@@ -2,6 +2,7 @@ package tools_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestFetchURLTool_Execute_MissingURL(t *testing.T) {
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{}
+	args := map[string]any{}
 
 	_, err := tool.Execute(ctx, logger, cache, args)
 
@@ -47,7 +48,7 @@ func TestFetchURLTool_Execute_EmptyURL(t *testing.T) {
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"url": "",
 	}
 
@@ -63,7 +64,7 @@ func TestFetchURLTool_Execute_InvalidURLType(t *testing.T) {
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"url": 123, // Invalid type
 	}
 
@@ -79,7 +80,7 @@ func TestFetchURLTool_Execute_InvalidURLScheme(t *testing.T) {
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"url": "ftp://example.com",
 	}
 
@@ -96,7 +97,7 @@ func TestFetchURLTool_Execute_InvalidMaxLength(t *testing.T) {
 	ctx := testutils.CreateTestContext()
 
 	// Test max_length too small
-	args := map[string]interface{}{
+	args := map[string]any{
 		"url":        "https://example.com",
 		"max_length": float64(0),
 	}
@@ -121,7 +122,7 @@ func TestFetchURLTool_Execute_InvalidStartIndex(t *testing.T) {
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"url":         "https://example.com",
 		"start_index": float64(-1),
 	}
@@ -133,7 +134,7 @@ func TestFetchURLTool_Execute_InvalidStartIndex(t *testing.T) {
 }
 
 // Note: Tests that require actual HTTP requests are omitted to avoid external dependencies
-// and nil pointer issues with uninitialized WebClient. The core parameter validation
+// and nil pointer issues with uninitialised WebClient. The core parameter validation
 // logic is already tested through the other test functions above.
 
 // Test the DetectContentType function (pure function, no external dependencies)
@@ -217,23 +218,22 @@ func TestProcessContent(t *testing.T) {
 		raw            bool
 		expectError    bool
 		expectContains string
+		notContains    string
 	}{
 		{
-			name: "HTML content conversion",
+			name: "HTML content conversion to markdown",
 			response: &webfetch.FetchURLResponse{
-				URL:         "https://example.com",
 				ContentType: "text/html",
 				StatusCode:  200,
 				Content:     "<html><body><h1>Title</h1><p>Content</p></body></html>",
 			},
 			raw:            false,
 			expectError:    false,
-			expectContains: "Title", // Should contain converted content
+			expectContains: "# Title", // Should contain markdown heading syntax
 		},
 		{
 			name: "Raw HTML content",
 			response: &webfetch.FetchURLResponse{
-				URL:         "https://example.com",
 				ContentType: "text/html",
 				StatusCode:  200,
 				Content:     "<html><body><h1>Title</h1><p>Content</p></body></html>",
@@ -245,7 +245,6 @@ func TestProcessContent(t *testing.T) {
 		{
 			name: "Plain text content",
 			response: &webfetch.FetchURLResponse{
-				URL:         "https://example.com",
 				ContentType: "text/plain",
 				StatusCode:  200,
 				Content:     "This is plain text content.",
@@ -257,7 +256,6 @@ func TestProcessContent(t *testing.T) {
 		{
 			name: "Binary content",
 			response: &webfetch.FetchURLResponse{
-				URL:         "https://example.com",
 				ContentType: "application/octet-stream",
 				StatusCode:  200,
 				Content:     string([]byte{0x89, 0x50, 0x4E, 0x47}), // PNG header
@@ -269,7 +267,6 @@ func TestProcessContent(t *testing.T) {
 		{
 			name: "HTTP error response",
 			response: &webfetch.FetchURLResponse{
-				URL:         "https://example.com",
 				ContentType: "text/html",
 				StatusCode:  404,
 				Content:     "Not Found",
@@ -281,7 +278,6 @@ func TestProcessContent(t *testing.T) {
 		{
 			name: "Empty content",
 			response: &webfetch.FetchURLResponse{
-				URL:         "https://example.com",
 				ContentType: "text/html",
 				StatusCode:  200,
 				Content:     "",
@@ -305,6 +301,177 @@ func TestProcessContent(t *testing.T) {
 				if !testutils.Contains(result, tt.expectContains) {
 					t.Errorf("Expected result to contain '%s', got: %s", tt.expectContains, result)
 				}
+			}
+
+			if tt.notContains != "" {
+				if testutils.Contains(result, tt.notContains) {
+					t.Errorf("Expected result NOT to contain '%s', got: %s", tt.notContains, result)
+				}
+			}
+		})
+	}
+}
+
+// Test markdown converter functionality
+func TestMarkdownConverter(t *testing.T) {
+	logger := testutils.CreateTestLogger()
+
+	tests := []struct {
+		name           string
+		html           string
+		expectContains []string
+		notContains    []string
+	}{
+		{
+			name: "Headings conversion",
+			html: "<h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3>",
+			expectContains: []string{
+				"# Heading 1",
+				"## Heading 2",
+				"### Heading 3",
+			},
+		},
+		{
+			name: "Bold and italic text",
+			html: "<p>This is <strong>bold</strong> and this is <em>italic</em></p>",
+			expectContains: []string{
+				"**bold**",
+				"*italic*",
+			},
+		},
+		{
+			name: "Links conversion",
+			html: "<p>Check out <a href='https://example.com'>this link</a></p>",
+			expectContains: []string{
+				"[this link](https://example.com)",
+			},
+		},
+		{
+			name: "Lists conversion",
+			html: "<ul><li>Item 1</li><li>Item 2</li></ul>",
+			expectContains: []string{
+				"- Item 1",
+				"- Item 2",
+			},
+		},
+		{
+			name: "Script tags removed",
+			html: "<html><head><script>alert('test');</script></head><body><p>Content</p></body></html>",
+			expectContains: []string{
+				"Content",
+			},
+			notContains: []string{
+				"alert",
+				"script",
+			},
+		},
+		{
+			name: "Navigation elements removed",
+			html: "<nav><a href='/home'>Home</a></nav><article><p>Main content</p></article>",
+			expectContains: []string{
+				"Main content",
+			},
+			notContains: []string{
+				"Home",
+			},
+		},
+		{
+			name: "Form elements removed",
+			html: "<form><input type='text' name='username'/><button>Submit</button></form><p>Text content</p>",
+			expectContains: []string{
+				"Text content",
+			},
+			notContains: []string{
+				"Submit",
+				"username",
+			},
+		},
+		{
+			name: "Nested HTML structures",
+			html: "<div><section><article><h2>Title</h2><p>Paragraph with <strong>bold</strong> text.</p></article></section></div>",
+			expectContains: []string{
+				"## Title",
+				"Paragraph with **bold** text",
+			},
+		},
+		{
+			name: "Code blocks",
+			html: "<pre><code>func main() {\n  fmt.Println(\"Hello\")\n}</code></pre>",
+			expectContains: []string{
+				"func main()",
+				"fmt.Println",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			converter := webfetch.NewMarkdownConverter()
+			result, err := converter.ConvertToMarkdown(logger, tt.html)
+
+			testutils.AssertNoError(t, err)
+
+			for _, expected := range tt.expectContains {
+				if !testutils.Contains(result, expected) {
+					t.Errorf("Expected markdown to contain '%s', got: %s", expected, result)
+				}
+			}
+
+			for _, unexpected := range tt.notContains {
+				if testutils.Contains(result, unexpected) {
+					t.Errorf("Expected markdown NOT to contain '%s', got: %s", unexpected, result)
+				}
+			}
+		})
+	}
+}
+
+// Test markdown cleaning functionality
+func TestMarkdownCleaning(t *testing.T) {
+	logger := testutils.CreateTestLogger()
+	converter := webfetch.NewMarkdownConverter()
+
+	tests := []struct {
+		name        string
+		html        string
+		checkFunc   func(result string) bool
+		description string
+	}{
+		{
+			name: "No excessive whitespace",
+			html: "<p>Line 1</p><p>Line 2</p><p>Line 3</p>",
+			checkFunc: func(result string) bool {
+				// Should not have more than 2 consecutive newlines
+				return !testutils.Contains(result, "\n\n\n")
+			},
+			description: "should not contain more than 2 consecutive newlines",
+		},
+		{
+			name: "Trimmed output",
+			html: "<p>Content</p>",
+			checkFunc: func(result string) bool {
+				// Should not start or end with whitespace
+				return result == strings.TrimSpace(result)
+			},
+			description: "should not have leading or trailing whitespace",
+		},
+		{
+			name: "Empty elements ignored",
+			html: "<p></p><div></div><span></span><p>Real content</p>",
+			checkFunc: func(result string) bool {
+				return testutils.Contains(result, "Real content")
+			},
+			description: "should contain real content and ignore empty elements",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := converter.ConvertToMarkdown(logger, tt.html)
+			testutils.AssertNoError(t, err)
+
+			if !tt.checkFunc(result) {
+				t.Errorf("Markdown cleaning check failed: %s. Got: %s", tt.description, result)
 			}
 		})
 	}
@@ -368,10 +535,7 @@ func TestFetchURLTool_PaginationLogic(t *testing.T) {
 				return
 			}
 
-			endIndex := tt.startIndex + tt.maxLength
-			if endIndex > totalLength {
-				endIndex = totalLength
-			}
+			endIndex := min(tt.startIndex+tt.maxLength, totalLength)
 
 			resultLength := endIndex - tt.startIndex
 			truncated := endIndex < totalLength
@@ -392,7 +556,7 @@ func TestFetchURLTool_ResultFormat(t *testing.T) {
 	}
 
 	// This is a structure test - we verify the expected JSON structure
-	sampleResponse := map[string]interface{}{
+	sampleResponse := map[string]any{
 		"url":          "https://example.com",
 		"content_type": "text/html",
 		"status_code":  200,
@@ -409,7 +573,7 @@ func TestFetchURLTool_ResultFormat(t *testing.T) {
 	jsonBytes, err := json.Marshal(sampleResponse)
 	testutils.AssertNoError(t, err)
 
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	err = json.Unmarshal(jsonBytes, &parsed)
 	testutils.AssertNoError(t, err)
 

@@ -9,7 +9,7 @@ Based on Anthropic's research, the Think tool allows AI agents to pause and reas
 ## Features
 
 - **Structured Reasoning**: Dedicated space for analysis and planning
-- **Complex Problem Solving**: Break down multi-step problems systematically  
+- **Complex Problem Solving**: Break down multi-step problems systematically
 - **Decision Support**: Evaluate options before choosing actions
 - **Edge Case Handling**: Consider unusual scenarios and potential issues
 - **Workflow Integration**: Seamlessly fits into existing tool chains
@@ -17,9 +17,24 @@ Based on Anthropic's research, the Think tool allows AI agents to pause and reas
 ## Research Background
 
 According to Anthropic's research, the Think tool provides:
-- **54% relative improvement** in complex airline domain scenarios
+- **54% relative improvement** in complex domain scenarios
 - **Better consistency** across multiple trials
 - **Enhanced handling** of edge cases and unusual scenarios
+
+## Parameters
+
+### Required Parameters
+
+- **`thought`** (string): The thought content to process
+  - **Maximum length**: Configurable via `THINK_MAX_LENGTH` environment variable (default: 2000 characters)
+  - **Description**: The actual thought or reasoning to be recorded
+
+### Optional Parameters
+
+- **`how_hard`** (string): Intensity level for thinking about the problem
+  - **Options**: `"hard"` (default), `"harder"`, `"ultra"`
+  - **Description**: Indicates the complexity level of the thinking required
+  - **Default**: `"hard"` if not specified
 
 ## When to Use the Think Tool
 
@@ -29,7 +44,8 @@ Before acting on complex tool results:
 {
   "name": "think",
   "arguments": {
-    "thought": "I need to analyse this API response before deciding which action to take next. The response contains multiple error codes and I should determine which is the primary issue to address first."
+    "thought": "I need to analyse this API response before deciding which action to take next. The response contains multiple error codes and I should determine which is the primary issue to address first.",
+    "how_hard": "hard"
   }
 }
 ```
@@ -38,7 +54,7 @@ Before acting on complex tool results:
 For multi-step challenges:
 ```json
 {
-  "name": "think", 
+  "name": "think",
   "arguments": {
     "thought": "This deployment issue involves network configuration, database migrations, and service dependencies. Let me work through each component systematically to identify the root cause."
   }
@@ -78,6 +94,44 @@ After gathering data:
 }
 ```
 
+### Using Different Thinking Intensities
+
+#### Standard Problems (`how_hard: "hard"`)
+For routine analysis and straightforward problem-solving:
+```json
+{
+  "name": "think",
+  "arguments": {
+    "thought": "The user wants to add a new API endpoint. I need to consider the request/response format, validation rules, and database queries required.",
+    "how_hard": "hard"
+  }
+}
+```
+
+#### Complex Problems (`how_hard: "harder"`)
+For multi-faceted issues requiring deeper analysis:
+```json
+{
+  "name": "think",
+  "arguments": {
+    "thought": "This microservices architecture change affects authentication, data consistency, service discovery, and deployment pipelines. I need to map out all the interdependencies and potential failure points before recommending an approach.",
+    "how_hard": "harder"
+  }
+}
+```
+
+#### Extremely Complex Problems (`how_hard: "ultra"`)
+For the most challenging scenarios requiring maximum cognitive effort:
+```json
+{
+  "name": "think",
+  "arguments": {
+    "thought": "The system is experiencing cascading failures across multiple regions, with database replication lag, CDN cache invalidation issues, and third-party service degradation all occurring simultaneously. I need to prioritise which issues to address first while maintaining system stability and user experience.",
+    "how_hard": "ultra"
+  }
+}
+```
+
 ## Usage Patterns
 
 ### Problem Analysis Pattern
@@ -91,7 +145,7 @@ After gathering data:
 }}
 
 // 3. Take targeted action
-{"name": "web_fetch", "arguments": {"url": "kubernetes.io/docs/troubleshooting"}}
+{"name": "fetch_url", "arguments": {"url": "kubernetes.io/docs/troubleshooting"}}
 ```
 
 ### Decision Making Pattern
@@ -185,7 +239,7 @@ After gathering data:
 ### Debugging Complex Issues
 ```json
 {
-  "name": "think", 
+  "name": "think",
   "arguments": {
     "thought": "The application works locally but fails in production. Key differences: environment variables, database connections, network configuration, and load balancing. I should systematically check each difference."
   }
@@ -209,7 +263,7 @@ After gathering data:
 # 1. Gather information
 internet_search "kubernetes ingress nginx configuration"
 
-# 2. Think through findings  
+# 2. Think through findings
 think "The search results show multiple configuration approaches. I need to consider which matches their cloud provider and security requirements."
 
 # 3. Get detailed documentation
@@ -225,7 +279,7 @@ think "Based on the documentation, I'll need to: 1) configure TLS certificates, 
 think "The user reports intermittent 500 errors. This could be: resource exhaustion, database connection issues, external service failures, or application bugs. I need to gather more specific information."
 
 # 2. Gather diagnostic information
-web_fetch "https://their-monitoring-dashboard.com/metrics"
+fetch_url "https://their-monitoring-dashboard.com/metrics"
 
 # 3. Correlate findings
 think "The metrics show memory usage spikes correlating with the errors. This suggests a memory leak or inefficient memory usage during peak load periods."
@@ -234,6 +288,23 @@ think "The metrics show memory usage spikes correlating with the errors. This su
 internet_search "node.js memory leak detection production"
 ```
 
+## Configuration
+
+### Environment Variables
+
+The Think tool supports the following configuration options:
+
+- **`THINK_MAX_LENGTH`**: Maximum length for thought input in characters
+  - **Default**: `2000`
+  - **Description**: Controls the maximum length of thoughts to prevent resource exhaustion
+  - **Example**: `THINK_MAX_LENGTH=5000` allows thoughts up to 5000 characters
+
+### Security Features
+
+- **Input Length Validation**: Prevents excessively long thoughts that could impact performance
+- **Resource Protection**: Configurable limits help maintain system stability
+- **Error Handling**: Clear feedback when thoughts exceed configured limits
+
 ## Performance Impact
 
 The Think tool has minimal performance overhead:
@@ -241,19 +312,30 @@ The Think tool has minimal performance overhead:
 - **Memory usage**: Negligible
 - **Network**: No external calls
 - **Storage**: Thoughts are logged but not persisted
+- **Input limits**: Configurable to balance functionality with resource protection
 
 ## Response Format
 
-The Think tool returns a simple confirmation:
-```json
-{
-  "thought_recorded": true,
-  "content": "Your thought has been recorded for reference",
-  "timestamp": "2025-01-14T10:30:45Z"
-}
+The Think tool returns the thought with a prefix indicating the thinking intensity level:
+
+### Example Responses
+
+**Default (`how_hard: "hard"`):**
+```
+I should use the think hard tool on this problem: The user wants to add a new API endpoint. I need to consider the request/response format, validation rules, and database queries required.
 ```
 
-The value comes from the cognitive process, not the response data.
+**Complex (`how_hard: "harder"`):**
+```
+I should use the think harder tool on this problem: This microservices architecture change affects authentication, data consistency, service discovery, and deployment pipelines. I need to map out all the interdependencies and potential failure points.
+```
+
+**Extremely Complex (`how_hard: "ultra"`):**
+```
+I should use the ultrathink tool on this problem: The system is experiencing cascading failures across multiple regions with database replication lag, CDN cache invalidation issues, and third-party service degradation all occurring simultaneously.
+```
+
+The prefix helps indicate the cognitive effort level applied to the problem, while the value comes from the structured thinking process itself.
 
 ---
 

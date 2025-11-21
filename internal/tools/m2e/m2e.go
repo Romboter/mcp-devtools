@@ -4,17 +4,37 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/sammcj/m2e/pkg/converter"
 	"github.com/sammcj/mcp-devtools/internal/registry"
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/tools"
 	"github.com/sirupsen/logrus"
 )
 
 // M2ETool implements the American to British English converter tool
 type M2ETool struct{}
+
+const (
+	// DefaultMaxTextLength is the default maximum length for text input
+	DefaultMaxTextLength = 40000
+	// M2EMaxLengthEnvVar is the environment variable for configuring max text length
+	M2EMaxLengthEnvVar = "M2E_MAX_LENGTH"
+)
+
+// getMaxTextLength returns the configured maximum text length
+func getMaxTextLength() int {
+	if envValue := os.Getenv(M2EMaxLengthEnvVar); envValue != "" {
+		if value, err := strconv.Atoi(envValue); err == nil && value > 0 {
+			return value
+		}
+	}
+	return DefaultMaxTextLength
+}
 
 // init registers the m2e tool
 func init() {
@@ -23,26 +43,34 @@ func init() {
 
 // Definition returns the tool's definition for MCP registration
 func (m *M2ETool) Definition() mcp.Tool {
-	return mcp.NewTool(
+	tool := mcp.NewTool(
 		"murican_to_english",
 		mcp.WithDescription(`Convert American English text to standard International / British English spelling.
 
-**Default behaviour**: Updates files in place. Provide a file_path to convert a file.
-**Inline mode**: Provide text parameter instead to get converted text returned directly.`),
+Default behaviour: Updates files in place. Provide a file_path to convert a file.
+Inline mode: Provide text parameter instead to get converted text returned directly.`),
 		mcp.WithString("file_path",
 			mcp.Description("Fully qualified absolute path to the file to update in place"),
 		),
 		mcp.WithString("text",
+			mcp.MaxLength(getMaxTextLength()),
 			mcp.Description("Text to convert and return inline (if not using file_path)"),
 		),
 		mcp.WithBoolean("keep_smart_quotes",
 			mcp.Description("Whether to keep smart quotes and em-dashes as-is (default: false, as we usually want to normalise them)"),
 		),
+
+		// Non-destructive writing annotations (note: file mode updates files in place)
+		mcp.WithReadOnlyHintAnnotation(false),   // Modifies text/files
+		mcp.WithDestructiveHintAnnotation(true), // File mode updates files in place
+		mcp.WithIdempotentHintAnnotation(true),  // Converting same text produces same result
+		mcp.WithOpenWorldHintAnnotation(false),  // Works with local text/files only
 	)
+	return tool
 }
 
 // Execute executes the m2e tool
-func (m *M2ETool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *M2ETool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	// Parse and validate parameters
 	request, err := m.parseRequest(args)
 	if err != nil {
@@ -73,6 +101,22 @@ func (m *M2ETool) executeInlineMode(conv *converter.Converter, request *ConvertR
 	normaliseSmartQuotes := !request.KeepSmartQuotes
 	convertedText := conv.ConvertToBritish(request.Text, normaliseSmartQuotes)
 
+	// Security content analysis for converted text
+	source := security.SourceContext{
+		Tool:        "murican_to_english",
+		URL:         "inline_text",
+		ContentType: "converted_text",
+	}
+	if result, err := security.AnalyseContent(convertedText, source); err == nil {
+		switch result.Action {
+		case security.ActionBlock:
+			return nil, fmt.Errorf("content blocked by security policy: %s", result.Message)
+		case security.ActionWarn:
+			// Add security warning to logs
+			logger.WithField("security_id", result.ID).Warn(result.Message)
+		}
+	}
+
 	// Count changes by comparing original and converted text
 	changesCount := m.countChanges(request.Text, convertedText)
 
@@ -90,6 +134,11 @@ func (m *M2ETool) executeInlineMode(conv *converter.Converter, request *ConvertR
 
 // executeUpdateFileMode handles file update operations
 func (m *M2ETool) executeUpdateFileMode(conv *converter.Converter, request *ConvertRequest, logger *logrus.Logger) (*mcp.CallToolResult, error) {
+	// Security check for file access (both read and write)
+	if err := security.CheckFileAccess(request.FilePath); err != nil {
+		return nil, err
+	}
+
 	// Read the file
 	originalContent, err := os.ReadFile(request.FilePath)
 	if err != nil {
@@ -98,16 +147,38 @@ func (m *M2ETool) executeUpdateFileMode(conv *converter.Converter, request *Conv
 
 	originalText := string(originalContent)
 
+	// Validate file content length
+	maxLength := getMaxTextLength()
+	if len(originalText) > maxLength {
+		return nil, fmt.Errorf("file content exceeds maximum length of %d characters (got %d)", maxLength, len(originalText))
+	}
+
 	// Convert the text (note: !KeepSmartQuotes because the converter expects normaliseSmartQuotes bool)
 	normaliseSmartQuotes := !request.KeepSmartQuotes
 	convertedText := conv.ConvertToBritish(originalText, normaliseSmartQuotes)
+
+	// Security content analysis for converted text
+	source := security.SourceContext{
+		Tool:        "murican_to_english",
+		URL:         request.FilePath,
+		ContentType: "converted_text",
+	}
+	if result, err := security.AnalyseContent(convertedText, source); err == nil {
+		switch result.Action {
+		case security.ActionBlock:
+			return nil, fmt.Errorf("content blocked by security policy: %s", result.Message)
+		case security.ActionWarn:
+			// Add security warning to logs
+			logger.WithField("security_id", result.ID).Warn(result.Message)
+		}
+	}
 
 	// Count changes by comparing original and converted text
 	changesCount := m.countChanges(originalText, convertedText)
 
 	// Only write the file if there are changes
 	if changesCount > 0 {
-		err = os.WriteFile(request.FilePath, []byte(convertedText), 0644)
+		err = os.WriteFile(request.FilePath, []byte(convertedText), 0600)
 		if err != nil {
 			return nil, fmt.Errorf("failed to write file %s: %w", request.FilePath, err)
 		}
@@ -132,7 +203,7 @@ func (m *M2ETool) executeUpdateFileMode(conv *converter.Converter, request *Conv
 }
 
 // parseRequest parses and validates the request parameters
-func (m *M2ETool) parseRequest(args map[string]interface{}) (*ConvertRequest, error) {
+func (m *M2ETool) parseRequest(args map[string]any) (*ConvertRequest, error) {
 	request := &ConvertRequest{}
 
 	// Parse text (for inline mode)
@@ -165,6 +236,11 @@ func (m *M2ETool) parseRequest(args map[string]interface{}) (*ConvertRequest, er
 		if strings.TrimSpace(request.Text) == "" {
 			return nil, fmt.Errorf("text parameter cannot be empty")
 		}
+		// Validate text length
+		maxLength := getMaxTextLength()
+		if len(request.Text) > maxLength {
+			return nil, fmt.Errorf("text exceeds maximum length of %d characters (got %d)", maxLength, len(request.Text))
+		}
 	} else if request.FilePath != "" {
 		// Update file mode validation
 		if strings.TrimSpace(request.FilePath) == "" {
@@ -190,12 +266,9 @@ func (m *M2ETool) countChanges(original, converted string) int {
 	convertedWords := strings.Fields(converted)
 
 	changes := 0
-	maxLen := len(originalWords)
-	if len(convertedWords) > maxLen {
-		maxLen = len(convertedWords)
-	}
+	maxLen := max(len(convertedWords), len(originalWords))
 
-	for i := 0; i < maxLen; i++ {
+	for i := range maxLen {
 		var origWord, convWord string
 		if i < len(originalWords) {
 			origWord = originalWords[i]
@@ -210,4 +283,73 @@ func (m *M2ETool) countChanges(original, converted string) int {
 	}
 
 	return changes
+}
+
+// ProvideExtendedInfo provides detailed usage information for the m2e tool
+func (m *M2ETool) ProvideExtendedInfo() *tools.ExtendedHelp {
+	return &tools.ExtendedHelp{
+		Examples: []tools.ToolExample{
+			{
+				Description: "Convert inline text from American to British English",
+				Arguments: map[string]any{
+					"text": "The color of the aluminum center was gray, and we realized it needed optimization.",
+				},
+				ExpectedResult: "Returns the converted text with British spellings: 'The colour of the aluminium centre was grey, and we realised it needed optimisation.'",
+			},
+			{
+				Description: "Convert a file in place with British spellings",
+				Arguments: map[string]any{
+					"file_path": "/Users/username/projects/myapp/README.md",
+				},
+				ExpectedResult: "Updates the file directly, converting American spellings to British throughout the document and returns a summary of changes made",
+			},
+			{
+				Description: "Convert text while preserving smart quotes",
+				Arguments: map[string]any{
+					"text":              "The program's behavior was optimized for the organization's needs.",
+					"keep_smart_quotes": true,
+				},
+				ExpectedResult: "Converts spellings but keeps smart quotes intact: 'The program's behaviour was optimised for the organisation's needs.'",
+			},
+			{
+				Description: "Convert text with smart quote normalisation",
+				Arguments: map[string]any{
+					"text":              "The program's behavior was \"optimized\" for the organization's needs.",
+					"keep_smart_quotes": false,
+				},
+				ExpectedResult: "Converts spellings and normalises smart quotes to standard quotes: 'The program's behaviour was \"optimised\" for the organisation's needs.'",
+			},
+		},
+		CommonPatterns: []string{
+			"Use text parameter for quick inline conversions and previews",
+			"Use file_path parameter to update documentation files in place",
+			"Set keep_smart_quotes to true when working with formatted documents that use typographic quotes",
+			"Test with text parameter first before updating important files",
+		},
+		Troubleshooting: []tools.TroubleshootingTip{
+			{
+				Problem:  "Cannot provide both 'text' and 'file_path' parameters",
+				Solution: "Choose either inline mode (text parameter) or file update mode (file_path parameter). Use text for quick conversions, file_path for updating files in place.",
+			},
+			{
+				Problem:  "File path must be fully qualified absolute path",
+				Solution: "Ensure file_path starts with / (Unix) or drive letter (Windows). Use complete paths like '/Users/username/project/file.md', not relative paths like './file.md'.",
+			},
+			{
+				Problem:  "Text exceeds maximum length error",
+				Solution: "The tool has configurable limits (default 40,000 characters). For larger texts, either increase M2E_MAX_LENGTH environment variable or process in chunks.",
+			},
+			{
+				Problem:  "File content exceeds maximum length",
+				Solution: "Large files are rejected for safety. Consider splitting the file or increasing the M2E_MAX_LENGTH environment variable if the file legitimately needs processing.",
+			},
+		},
+		ParameterDetails: map[string]string{
+			"text":              "Text to convert inline and return immediately. Cannot be used with file_path. Best for previews, testing, or small conversions where you need the result returned.",
+			"file_path":         "Absolute path to file to update in place. File is read, converted, and written back only if changes are needed. Cannot be used with text parameter.",
+			"keep_smart_quotes": "Whether to preserve smart quotes and em-dashes (true) or normalise them to standard ASCII quotes (false, default). Useful when working with formatted documents vs plain text.",
+		},
+		WhenToUse:    "Use for converting documentation, code comments, README files, or any text from American to British English spelling. Ideal for maintaining consistent language standards across international projects.",
+		WhenNotToUse: "Don't use for code syntax, variable names, API endpoints, or technical identifiers. Not suitable for languages other than English or for complex linguistic transformations beyond spelling differences.",
+	}
 }

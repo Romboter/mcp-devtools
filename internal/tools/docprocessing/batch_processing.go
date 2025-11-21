@@ -1,7 +1,6 @@
 package docprocessing
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -9,10 +8,11 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/sammcj/mcp-devtools/internal/security"
 )
 
 // executeBatch processes multiple documents concurrently
-func (t *DocumentProcessorTool) executeBatch(ctx context.Context, args map[string]interface{}, sources []interface{}) (*mcp.CallToolResult, error) {
+func (t *DocumentProcessorTool) executeBatch(args map[string]any, sources []any) (*mcp.CallToolResult, error) {
 	startTime := time.Now()
 
 	// Convert sources to strings
@@ -28,10 +28,7 @@ func (t *DocumentProcessorTool) executeBatch(ctx context.Context, args map[strin
 	}
 
 	// Determine concurrency limit
-	maxConcurrency := t.getMaxConcurrency(args)
-	if maxConcurrency > len(sourceStrings) {
-		maxConcurrency = len(sourceStrings)
-	}
+	maxConcurrency := min(t.getMaxConcurrency(args), len(sourceStrings))
 
 	// Create channels for work distribution
 	sourceChan := make(chan string, len(sourceStrings))
@@ -45,13 +42,11 @@ func (t *DocumentProcessorTool) executeBatch(ctx context.Context, args map[strin
 
 	// Start worker goroutines
 	var wg sync.WaitGroup
-	for i := 0; i < maxConcurrency; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range maxConcurrency {
+		wg.Go(func() {
 			for source := range sourceChan {
 				// Create individual request for this source
-				individualArgs := make(map[string]interface{})
+				individualArgs := make(map[string]any)
 				for k, v := range args {
 					if k != "sources" { // Exclude sources array
 						individualArgs[k] = v
@@ -79,15 +74,34 @@ func (t *DocumentProcessorTool) executeBatch(ctx context.Context, args map[strin
 					continue
 				}
 
+				// Security: Analyse processed content for batch processing
+				if security.IsEnabled() && response.Error == "" {
+					sourceContext := security.SourceContext{
+						Tool: "document_processing",
+						URL:  source,
+					}
+
+					result, err := security.AnalyseContent(response.Content, sourceContext)
+					if err == nil {
+						switch result.Action {
+						case security.ActionBlock:
+							response.Error = fmt.Sprintf("content blocked by security policy: %s", result.Message)
+						case security.ActionWarn:
+							// Note: In batch processing, security warnings are noted but don't fail the processing
+							// Individual responses will include the security information
+						}
+					}
+				}
+
 				// Cache result if successful
-				if t.shouldUseCache(req) && response.Error == "" {
+				if t.shouldUseCache() && response.Error == "" {
 					cacheKey := t.cacheManager.GenerateCacheKey(req)
 					_ = t.cacheManager.Set(cacheKey, response)
 				}
 
 				resultChan <- response
 			}
-		}()
+		})
 	}
 
 	// Wait for all workers to complete
@@ -117,7 +131,7 @@ func (t *DocumentProcessorTool) executeBatch(ctx context.Context, args map[strin
 }
 
 // getMaxConcurrency determines the maximum concurrency for batch processing
-func (t *DocumentProcessorTool) getMaxConcurrency(args map[string]interface{}) int {
+func (t *DocumentProcessorTool) getMaxConcurrency(args map[string]any) int {
 	// Check if max_concurrency is specified
 	if maxConc, ok := args["max_concurrency"].(float64); ok {
 		requested := int(maxConc)
@@ -128,13 +142,7 @@ func (t *DocumentProcessorTool) getMaxConcurrency(args map[string]interface{}) i
 
 	// Default: CPU cores - 1, minimum 1, maximum 10
 	cores := runtime.NumCPU()
-	defaultConcurrency := cores - 1
-	if defaultConcurrency < 1 {
-		defaultConcurrency = 1
-	}
-	if defaultConcurrency > 10 {
-		defaultConcurrency = 10
-	}
+	defaultConcurrency := min(max(cores-1, 1), 10)
 
 	return defaultConcurrency
 }

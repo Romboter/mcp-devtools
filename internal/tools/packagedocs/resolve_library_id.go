@@ -8,6 +8,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/sammcj/mcp-devtools/internal/registry"
+	"github.com/sammcj/mcp-devtools/internal/tools"
 	"github.com/sirupsen/logrus"
 )
 
@@ -25,9 +26,9 @@ func init() {
 func (t *ResolveLibraryIDTool) Definition() mcp.Tool {
 	return mcp.NewTool(
 		"resolve_library_id",
-		mcp.WithDescription(`Resolves a package/product name to a Context7-compatible library ID and returns a list of matching libraries.
+		mcp.WithDescription(`Resolves a package/product name to a Context7-compatible library ID and returns a list of matching libraries. Use this as the first step when you need to lookup documentation for a package or library.
 
-You MUST call this function before 'get_library_docs' to obtain a valid Context7-compatible library ID UNLESS the user explicitly provides a library ID in the format '/org/project' or '/org/project/version' in their query.
+You MUST call this function before 'get_library_documentation' to obtain a valid Context7-compatible library ID UNLESS the user explicitly provides a library ID in the format '/org/project' or '/org/project/version' in their query.
 
 Selection Process:
 1. Analyse the query to understand what library/package the user is looking for
@@ -48,11 +49,16 @@ For ambiguous queries, request clarification before proceeding with a best-guess
 			mcp.Required(),
 			mcp.Description("Library name to search for and retrieve a Context7-compatible library ID."),
 		),
+		// Read-only annotations for library ID resolution tool
+		mcp.WithReadOnlyHintAnnotation(true),     // Only queries package registries, doesn't modify environment
+		mcp.WithDestructiveHintAnnotation(false), // No destructive operations
+		mcp.WithIdempotentHintAnnotation(true),   // Same library name returns same results
+		mcp.WithOpenWorldHintAnnotation(true),    // Queries external package registries
 	)
 }
 
 // Execute executes the resolve_library_id tool
-func (t *ResolveLibraryIDTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *ResolveLibraryIDTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	// Lazy initialise client
 	if t.client == nil {
 		t.client = NewClient(logger)
@@ -63,7 +69,7 @@ func (t *ResolveLibraryIDTool) Execute(ctx context.Context, logger *logrus.Logge
 	// Parse library name
 	libraryName, ok := args["libraryName"].(string)
 	if !ok || strings.TrimSpace(libraryName) == "" {
-		return nil, fmt.Errorf("missing or invalid required parameter: libraryName")
+		return nil, fmt.Errorf("missing required parameter 'libraryName'. Provide the library or package name to search for (e.g., {\"libraryName\": \"React\"}, {\"libraryName\": \"Next.js\"}, or {\"libraryName\": \"aws-sdk\"})")
 	}
 
 	libraryName = strings.TrimSpace(libraryName)
@@ -116,10 +122,13 @@ func (t *ResolveLibraryIDTool) formatResponse(libraryName string, results []*Sea
 		builder.WriteString(fmt.Sprintf("- Trust Score: %.1f/10 (higher scores indicate more authoritative sources)\n", bestMatch.TrustScore))
 	}
 	if bestMatch.Stars > 0 {
-		builder.WriteString(fmt.Sprintf("- GitHub Stars: %d\n", bestMatch.Stars))
+		builder.WriteString(fmt.Sprintf("- GitHub Stars: %d (legacy metric)\n", bestMatch.Stars))
 	}
 	if bestMatch.TotalSnippets > 0 {
 		builder.WriteString(fmt.Sprintf("- Documentation Coverage: %d code snippets, %d tokens\n", bestMatch.TotalSnippets, bestMatch.TotalTokens))
+	}
+	if len(bestMatch.Versions) > 0 {
+		builder.WriteString(fmt.Sprintf("- Available Versions: %s\n", strings.Join(bestMatch.Versions, ", ")))
 	}
 
 	// Show alternative matches if there are more results
@@ -145,6 +154,9 @@ func (t *ResolveLibraryIDTool) formatResponse(libraryName string, results []*Sea
 			if result.TrustScore > 0 || result.Stars > 0 {
 				builder.WriteString(fmt.Sprintf("   Trust Score: %.1f, Stars: %d\n", result.TrustScore, result.Stars))
 			}
+			if len(result.Versions) > 0 {
+				builder.WriteString(fmt.Sprintf("   Versions: %s\n", strings.Join(result.Versions, ", ")))
+			}
 			builder.WriteString("\n")
 		}
 
@@ -152,4 +164,82 @@ func (t *ResolveLibraryIDTool) formatResponse(libraryName string, results []*Sea
 	}
 
 	return builder.String()
+}
+
+// ProvideExtendedInfo provides detailed usage information for the resolve_library_id tool
+func (t *ResolveLibraryIDTool) ProvideExtendedInfo() *tools.ExtendedHelp {
+	return &tools.ExtendedHelp{
+		Examples: []tools.ToolExample{
+			{
+				Description: "Find the Context7 library ID for React",
+				Arguments: map[string]any{
+					"libraryName": "React",
+				},
+				ExpectedResult: "Returns the Context7-compatible library ID for React (e.g., '/facebook/react') along with trust score, stars, and documentation coverage details",
+			},
+			{
+				Description: "Resolve Next.js library ID",
+				Arguments: map[string]any{
+					"libraryName": "Next.js",
+				},
+				ExpectedResult: "Identifies '/vercel/next.js' as the library ID with explanation of selection criteria and alternative matches if available",
+			},
+			{
+				Description: "Find MongoDB Node.js driver",
+				Arguments: map[string]any{
+					"libraryName": "mongodb nodejs driver",
+				},
+				ExpectedResult: "Locates the official MongoDB Node.js driver library ID with version information and documentation metrics",
+			},
+			{
+				Description: "Search for AWS SDK",
+				Arguments: map[string]any{
+					"libraryName": "aws-sdk",
+				},
+				ExpectedResult: "Returns the most relevant AWS SDK library ID (likely JavaScript version) with alternatives for different language SDKs",
+			},
+			{
+				Description: "Resolve specific version of a library",
+				Arguments: map[string]any{
+					"libraryName": "vue 3",
+				},
+				ExpectedResult: "Finds Vue.js version 3 specific documentation or the main Vue library with version-specific information",
+			},
+		},
+		CommonPatterns: []string{
+			"Always use this tool BEFORE calling get_library_documentation to find the correct library ID format",
+			"Use specific library names rather than generic terms (e.g., 'React' not 'frontend framework')",
+			"Include version or variant info in search (e.g., 'vue 3', 'aws-sdk-js')",
+			"Check alternative matches if the selected library doesn't match your needs",
+			"Use the exact library ID returned in subsequent get_library_documentation calls",
+			"For ambiguous results, try more specific search terms or library variants",
+		},
+		Troubleshooting: []tools.TroubleshootingTip{
+			{
+				Problem:  "No libraries found for a search term",
+				Solution: "Try alternative names, abbreviations, or more generic terms. For example, try 'mongoose' instead of 'mongoose orm', or 'express' instead of 'express.js'.",
+			},
+			{
+				Problem:  "Wrong library selected as best match",
+				Solution: "Check the alternative matches section in the response. You can use a more specific libraryName or manually select from the alternatives provided.",
+			},
+			{
+				Problem:  "Multiple similar libraries returned",
+				Solution: "Look at trust scores, GitHub stars, and documentation coverage to choose the most appropriate option. Higher trust scores (7-10) indicate more authoritative sources.",
+			},
+			{
+				Problem:  "Library ID format doesn't work with get_library_documentation",
+				Solution: "Ensure you're using the exact library ID returned (e.g., '/facebook/react'), not the library title. The library ID always starts with '/' and follows '/org/project' format.",
+			},
+			{
+				Problem:  "Outdated or deprecated library versions",
+				Solution: "Check the alternative matches for newer versions, or search with version-specific terms like 'react 18' or 'vue 3' to find current versions.",
+			},
+		},
+		ParameterDetails: map[string]string{
+			"libraryName": "Library or package name to search for. Can include version numbers, variants, or descriptive terms. Examples: 'React', 'Next.js', 'mongodb driver', 'aws-sdk-js', 'vue 3'. More specific terms usually yield better results.",
+		},
+		WhenToUse:    "Use as the first step before getting library documentation. Essential when you know the library name but need the Context7-compatible format, or when discovering available libraries for a technology stack.",
+		WhenNotToUse: "Don't use when you already have the exact Context7 library ID in '/org/project' format, for general technology searches (use internet_search instead), or when looking for tutorials rather than official documentation.",
+	}
 }

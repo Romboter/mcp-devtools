@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,7 +16,17 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/sammcj/mcp-devtools/internal/registry"
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/tools"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	// PDF security limits
+	DefaultMaxFileSize      = int64(200 * 1024 * 1024)      // 200MB default file size limit
+	DefaultMaxMemoryLimit   = int64(5 * 1024 * 1024 * 1024) // 5GB default memory limit
+	PDFMaxFileSizeEnvVar    = "PDF_MAX_FILE_SIZE"
+	PDFMaxMemoryLimitEnvVar = "PDF_MAX_MEMORY_LIMIT"
 )
 
 // PDFTool implements PDF processing with pdfcpu
@@ -28,33 +39,40 @@ func init() {
 
 // Definition returns the tool's definition for MCP registration
 func (t *PDFTool) Definition() mcp.Tool {
-	return mcp.NewTool(
+	tool := mcp.NewTool(
 		"pdf",
-		mcp.WithDescription(`Extract text, tables and images from PDFs. The text extraction quality depends on the PDF structure. This PDF extraction tool is simpler and faster than the document processing tool, in general try this tool for PDFs first`),
+		mcp.WithDescription(`Extract text, tables & images from PDFs. The text extraction quality depends on the PDF structure. This PDF extraction tool is simpler & faster than the document processing tool, in general try this tool for PDFs first`),
 		mcp.WithString("file_path",
 			mcp.Required(),
 			mcp.Description("Absolute file path to the PDF document to process"),
 		),
 		mcp.WithString("output_dir",
-			mcp.Description("Output directory for markdown and images (defaults to same directory as PDF)"),
+			mcp.Description("Output directory for markdown & images (defaults to same directory as PDF)"),
 		),
 		mcp.WithBoolean("extract_images",
-			mcp.Description("Whether to extract images from the PDF (default: true)"),
-			mcp.DefaultBool(true),
+			mcp.Description("Extract images from the PDF (default: false)"),
+			mcp.DefaultBool(false),
 		),
 		mcp.WithString("pages",
 			mcp.Description("Page range to process (e.g., '1-5', '1,3,5', or 'all' for all pages, default: all)"),
 			mcp.DefaultString("all"),
 		),
+
+		// Non-destructive writing annotations
+		mcp.WithReadOnlyHintAnnotation(false),    // Extracts text to new format
+		mcp.WithDestructiveHintAnnotation(false), // Doesn't modify source PDF
+		mcp.WithIdempotentHintAnnotation(true),   // Same PDF produces same output
+		mcp.WithOpenWorldHintAnnotation(false),   // Works with local files only
 	)
+	return tool
 }
 
 // Execute processes the PDF file
-func (t *PDFTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *PDFTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Debug("Executing PDF processing tool")
 
 	// Parse and validate parameters
-	request, err := t.parseRequest(args)
+	request, err := t.ParseRequest(args)
 	if err != nil {
 		return nil, fmt.Errorf("invalid parameters: %w", err)
 	}
@@ -66,18 +84,38 @@ func (t *PDFTool) Execute(ctx context.Context, logger *logrus.Logger, cache *syn
 		"pages":          request.Pages,
 	}).Debug("PDF processing parameters")
 
-	// Validate input file exists
-	if _, err := os.Stat(request.FilePath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("PDF file does not exist: %s", request.FilePath)
+	// Security check for input file access
+	if err := security.CheckFileAccess(request.FilePath); err != nil {
+		return nil, err
 	}
 
-	// Create configuration
+	// Security check for output directory access
+	if err := security.CheckFileAccess(request.OutputDir); err != nil {
+		return nil, err
+	}
+
+	// Validate input file exists and check file size
+	fileInfo, err := os.Stat(request.FilePath)
+	if os.IsNotExist(err) {
+		return nil, fmt.Errorf("PDF file does not exist: %s", request.FilePath)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat PDF file: %w", err)
+	}
+
+	// Apply file size limits
+	if err := t.ValidateFileSize(fileInfo.Size()); err != nil {
+		return nil, fmt.Errorf("file size validation failed: %w", err)
+	}
+
+	// Create configuration with memory limits
 	conf := model.NewDefaultConfiguration()
+	t.applyMemoryLimits(conf)
 
 	// Process the PDF
-	result, err := t.processPDF(ctx, logger, request, conf)
+	result, err := t.processPDF(logger, request, conf)
 	if err != nil {
-		return t.newToolResultJSON(map[string]interface{}{
+		return t.newToolResultJSON(map[string]any{
 			"error":     err.Error(),
 			"file_path": request.FilePath,
 		})
@@ -93,8 +131,8 @@ func (t *PDFTool) Execute(ctx context.Context, logger *logrus.Logger, cache *syn
 	return t.newToolResultJSON(result)
 }
 
-// parseRequest parses and validates the tool arguments
-func (t *PDFTool) parseRequest(args map[string]interface{}) (*PDFRequest, error) {
+// ParseRequest parses and validates the tool arguments
+func (t *PDFTool) ParseRequest(args map[string]any) (*PDFRequest, error) {
 	// Parse file_path (required)
 	filePath, ok := args["file_path"].(string)
 	if !ok || filePath == "" {
@@ -142,9 +180,9 @@ func (t *PDFTool) parseRequest(args map[string]interface{}) (*PDFRequest, error)
 }
 
 // processPDF handles the main PDF processing logic
-func (t *PDFTool) processPDF(ctx context.Context, logger *logrus.Logger, request *PDFRequest, conf *model.Configuration) (*PDFResponse, error) {
+func (t *PDFTool) processPDF(logger *logrus.Logger, request *PDFRequest, conf *model.Configuration) (*PDFResponse, error) {
 	// Ensure output directory exists
-	if err := os.MkdirAll(request.OutputDir, 0755); err != nil {
+	if err := os.MkdirAll(request.OutputDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create output directory: %w", err)
 	}
 
@@ -168,7 +206,7 @@ func (t *PDFTool) processPDF(ctx context.Context, logger *logrus.Logger, request
 	logger.WithField("page_count", pageCount).Debug("PDF page count")
 
 	// Parse page selection
-	selectedPages, err := t.parsePageSelection(request.Pages, pageCount)
+	selectedPages, err := t.ParsePageSelection(request.Pages, pageCount)
 	if err != nil {
 		return nil, fmt.Errorf("invalid page selection: %w", err)
 	}
@@ -183,7 +221,7 @@ func (t *PDFTool) processPDF(ctx context.Context, logger *logrus.Logger, request
 	if request.ExtractImages {
 		logger.Debug("Extracting images from PDF")
 		imageDir := filepath.Join(request.OutputDir, baseName+"_images")
-		if err := os.MkdirAll(imageDir, 0755); err != nil {
+		if err := os.MkdirAll(imageDir, 0700); err != nil {
 			return nil, fmt.Errorf("failed to create image directory: %w", err)
 		}
 
@@ -228,8 +266,25 @@ func (t *PDFTool) processPDF(ctx context.Context, logger *logrus.Logger, request
 		}
 	}
 
+	// Security content analysis for extracted text
+	markdownContentStr := markdownContent.String()
+	source := security.SourceContext{
+		Tool:        "pdf",
+		URL:         request.FilePath,
+		ContentType: "extracted_text",
+	}
+	if result, err := security.AnalyseContent(markdownContentStr, source); err == nil {
+		switch result.Action {
+		case security.ActionBlock:
+			return nil, fmt.Errorf("content blocked by security policy: %s", result.Message)
+		case security.ActionWarn:
+			// Add security warning to logs
+			logger.WithField("security_id", result.ID).Warn(result.Message)
+		}
+	}
+
 	// Write markdown file
-	err = os.WriteFile(markdownFile, []byte(markdownContent.String()), 0644)
+	err = os.WriteFile(markdownFile, []byte(markdownContentStr), 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write markdown file: %w", err)
 	}
@@ -247,20 +302,20 @@ func (t *PDFTool) processPDF(ctx context.Context, logger *logrus.Logger, request
 	return response, nil
 }
 
-// parsePageSelection parses page selection string into a slice of page numbers
-func (t *PDFTool) parsePageSelection(pages string, maxPage int) ([]int, error) {
+// ParsePageSelection parses page selection string into a slice of page numbers
+func (t *PDFTool) ParsePageSelection(pages string, maxPage int) ([]int, error) {
 	if pages == "" || pages == "all" {
 		result := make([]int, maxPage)
-		for i := 0; i < maxPage; i++ {
+		for i := range maxPage {
 			result[i] = i + 1
 		}
 		return result, nil
 	}
 
 	var result []int
-	parts := strings.Split(pages, ",")
+	parts := strings.SplitSeq(pages, ",")
 
-	for _, part := range parts {
+	for part := range parts {
 		part = strings.TrimSpace(part)
 		if strings.Contains(part, "-") {
 			// Range: "1-5"
@@ -412,9 +467,9 @@ func (t *PDFTool) processPageContent(content string) string {
 // extractAllTextFromPDFContent extracts all text strings from PDF content operations
 func (t *PDFTool) extractAllTextFromPDFContent(content string) []string {
 	var texts []string
-	lines := strings.Split(content, "\n")
+	lines := strings.SplitSeq(content, "\n")
 
-	for _, line := range lines {
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -425,7 +480,7 @@ func (t *PDFTool) extractAllTextFromPDFContent(content string) []string {
 			strings.Contains(line, "' ") || strings.Contains(line, "\" ") {
 
 			// Extract text from this line
-			lineTexts := t.extractTextFromPDFOperation(line)
+			lineTexts := t.ExtractTextFromPDFOperation(line)
 			for _, text := range lineTexts {
 				if text != "" {
 					texts = append(texts, text)
@@ -437,8 +492,8 @@ func (t *PDFTool) extractAllTextFromPDFContent(content string) []string {
 	return texts
 }
 
-// extractTextFromPDFOperation extracts all text strings from a PDF operation line
-func (t *PDFTool) extractTextFromPDFOperation(operation string) []string {
+// ExtractTextFromPDFOperation extracts all text strings from a PDF operation line
+func (t *PDFTool) ExtractTextFromPDFOperation(operation string) []string {
 	var texts []string
 	inText := false
 	start := -1
@@ -517,10 +572,8 @@ func (t *PDFTool) isPDFCommand(line string) bool {
 
 	// Check if line ends with a PDF command
 	lastWord := words[len(words)-1]
-	for _, cmd := range pdfCommands {
-		if lastWord == cmd {
-			return true
-		}
+	if slices.Contains(pdfCommands, lastWord) {
+		return true
 	}
 
 	// Check if line is mostly numbers and operators (coordinates, etc.)
@@ -682,11 +735,135 @@ func (t *PDFTool) getImagesForPage(allImages []string, pageNum int) []string {
 }
 
 // newToolResultJSON creates a new tool result with JSON content
-func (t *PDFTool) newToolResultJSON(data interface{}) (*mcp.CallToolResult, error) {
+func (t *PDFTool) newToolResultJSON(data any) (*mcp.CallToolResult, error) {
 	jsonBytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// GetMaxFileSize returns the configured maximum file size in bytes
+func (t *PDFTool) GetMaxFileSize() int64 {
+	if sizeStr := os.Getenv(PDFMaxFileSizeEnvVar); sizeStr != "" {
+		if size, err := strconv.ParseInt(sizeStr, 10, 64); err == nil && size > 0 {
+			return size
+		}
+	}
+	return DefaultMaxFileSize
+}
+
+// GetMaxMemoryLimit returns the configured maximum memory limit in bytes
+func (t *PDFTool) GetMaxMemoryLimit() int64 {
+	if limitStr := os.Getenv(PDFMaxMemoryLimitEnvVar); limitStr != "" {
+		if limit, err := strconv.ParseInt(limitStr, 10, 64); err == nil && limit > 0 {
+			return limit
+		}
+	}
+	return DefaultMaxMemoryLimit
+}
+
+// ValidateFileSize validates that the file size is within limits
+func (t *PDFTool) ValidateFileSize(fileSize int64) error {
+	maxSize := t.GetMaxFileSize()
+	if fileSize > maxSize {
+		sizeMB := float64(fileSize) / (1024 * 1024)
+		maxSizeMB := float64(maxSize) / (1024 * 1024)
+		return fmt.Errorf("PDF file size %.1fMB exceeds maximum allowed size of %.1fMB (use %s environment variable to adjust limit)", sizeMB, maxSizeMB, PDFMaxFileSizeEnvVar)
+	}
+	return nil
+}
+
+// applyMemoryLimits applies memory limits to the PDF configuration
+func (t *PDFTool) applyMemoryLimits(conf *model.Configuration) {
+	// Note: pdfcpu doesn't have direct memory limit configuration
+	// This function is a placeholder for future memory limiting implementation
+	// For now, we rely on the file size limits to prevent excessive memory usage
+	// since PDF processing memory usage is generally proportional to file size
+
+	// Set stricter validation to prevent malformed PDFs from consuming excessive memory
+	conf.ValidationMode = model.ValidationStrict
+
+	// Note: Configuration struct doesn't expose OptimizationMode field
+	// Memory limits are enforced through file size validation
+}
+
+// ProvideExtendedInfo provides detailed usage information for the PDF tool
+func (t *PDFTool) ProvideExtendedInfo() *tools.ExtendedHelp {
+	return &tools.ExtendedHelp{
+		Examples: []tools.ToolExample{
+			{
+				Description: "Extract text and images from entire PDF",
+				Arguments: map[string]any{
+					"file_path":      "/Users/username/documents/report.pdf",
+					"extract_images": true,
+				},
+				ExpectedResult: "Creates a markdown file with extracted text and saves images to a subfolder, returns paths to generated files and processing statistics",
+			},
+			{
+				Description: "Extract only text from specific pages",
+				Arguments: map[string]any{
+					"file_path":      "/Users/username/documents/manual.pdf",
+					"pages":          "1-5,10,15-20",
+					"extract_images": false,
+				},
+				ExpectedResult: "Extracts text only from pages 1-5, 10, and 15-20, creating a markdown file without image extraction",
+			},
+			{
+				Description: "Extract to custom output directory",
+				Arguments: map[string]any{
+					"file_path":      "/Users/username/pdfs/research.pdf",
+					"output_dir":     "/Users/username/extracted/research",
+					"extract_images": true,
+				},
+				ExpectedResult: "Extracts text and images to the specified output directory instead of the default PDF location",
+			},
+			{
+				Description: "Extract single page with images",
+				Arguments: map[string]any{
+					"file_path":      "/Users/username/docs/presentation.pdf",
+					"pages":          "5",
+					"extract_images": true,
+				},
+				ExpectedResult: "Extracts only page 5 with any images on that page, useful for extracting specific slides or sections",
+			},
+		},
+		CommonPatterns: []string{
+			"Start with text-only extraction (extract_images: false) to quickly preview content before full processing",
+			"Use page ranges to extract specific sections rather than processing entire large documents",
+			"Specify custom output_dir when working with multiple PDFs to keep extractions organised",
+			"Use 'all' pages parameter (default) for comprehensive document processing",
+		},
+		Troubleshooting: []tools.TroubleshootingTip{
+			{
+				Problem:  "PDF file size exceeds maximum allowed size error",
+				Solution: "The tool has size limits (default 200MB) for security. Use PDF_MAX_FILE_SIZE environment variable to increase the limit, or split large PDFs into smaller files.",
+			},
+			{
+				Problem:  "Text extraction returns poor quality or garbled text",
+				Solution: "Some PDFs (especially scanned documents) may have poor text extraction. The tool works best with text-based PDFs. For scanned documents, consider OCR preprocessing.",
+			},
+			{
+				Problem:  "Invalid page range error",
+				Solution: "Ensure page numbers are valid (1-based) and don't exceed the PDF's page count. Use format '1-5' for ranges, '1,3,5' for specific pages, or 'all' for entire document.",
+			},
+			{
+				Problem:  "No images extracted despite extract_images: true",
+				Solution: "The PDF may not contain extractable images, or images may be embedded in a format not supported. Check the generated markdown file for any extracted content.",
+			},
+			{
+				Problem:  "Output directory permission errors",
+				Solution: "Ensure the output directory exists and has write permissions. The tool will create subdirectories but needs write access to the parent directory.",
+			},
+		},
+		ParameterDetails: map[string]string{
+			"file_path":      "Absolute path to PDF file (required). Must end with .pdf extension. File size limits apply for security (configurable via PDF_MAX_FILE_SIZE).",
+			"output_dir":     "Directory for extracted files (optional). Defaults to same directory as PDF. Tool creates markdown file and optional image subdirectory here.",
+			"extract_images": "Whether to extract and save images (optional, default: false). Images saved to subfolder with references in markdown file.",
+			"pages":          "Page selection (optional, default: 'all'). Supports ranges ('1-5'), lists ('1,3,5'), or 'all'. Pages are 1-based indexed.",
+		},
+		WhenToUse:    "Use for extracting text and images from text-based PDFs, converting PDFs to markdown format, extracting specific pages or sections, or processing documents for further analysis or conversion workflows.",
+		WhenNotToUse: "Don't use for scanned PDFs that need OCR, password-protected PDFs, or extremely large files that exceed memory constraints. Not suitable for preserving complex formatting or interactive PDF features.",
+	}
 }

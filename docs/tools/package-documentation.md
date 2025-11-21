@@ -19,7 +19,7 @@ Instead of hunting through multiple documentation sites, this tool retrieves foc
 The tool uses a two-step process for optimal results:
 
 1. **`resolve_library_id`**: Find the correct library identifier
-2. **`get_library_docs`**: Retrieve detailed documentation
+2. **`get_library_documentation`**: Retrieve detailed documentation
 
 ## Usage Examples
 
@@ -50,7 +50,7 @@ Use the resolved ID to fetch documentation:
 
 ```json
 {
-  "name": "get_library_docs",
+  "name": "get_library_documentation",
   "arguments": {
     "context7CompatibleLibraryID": "/facebook/react",
     "topic": "hooks",
@@ -73,7 +73,7 @@ Use the resolved ID to fetch documentation:
 
 // Step 2: Get docs focused on hooks
 {
-  "name": "get_library_docs",
+  "name": "get_library_documentation",
   "arguments": {
     "context7CompatibleLibraryID": "/facebook/react",
     "topic": "hooks",
@@ -94,7 +94,7 @@ Use the resolved ID to fetch documentation:
 
 // Step 2: Get routing-specific docs
 {
-  "name": "get_library_docs",
+  "name": "get_library_documentation",
   "arguments": {
     "context7CompatibleLibraryID": "/expressjs/express",
     "topic": "routing",
@@ -115,7 +115,7 @@ Use the resolved ID to fetch documentation:
 
 // Step 2: Get ML-specific docs
 {
-  "name": "get_library_docs",
+  "name": "get_library_documentation",
   "arguments": {
     "context7CompatibleLibraryID": "/tensorflow/tensorflow",
     "topic": "machine learning",
@@ -136,7 +136,7 @@ Use the resolved ID to fetch documentation:
 
 // Step 2: Get authentication docs
 {
-  "name": "get_library_docs",
+  "name": "get_library_documentation",
   "arguments": {
     "context7CompatibleLibraryID": "/django/django",
     "topic": "authentication",
@@ -153,7 +153,7 @@ Use the resolved ID to fetch documentation:
 |-----------|----------|-------------|
 | `libraryName` | ✅ | Library name to search for (e.g., "react", "tensorflow", "express") |
 
-### `get_library_docs`
+### `get_library_documentation`
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
@@ -249,6 +249,29 @@ Use the resolved ID to fetch documentation:
 2. Get documentation for same topics across libraries
 3. Compare approaches and features
 
+## Configuration
+
+### Environment Variables
+
+The Package Documentation tool supports the following configuration options:
+
+- **`CONTEXT7_API_KEY`**: API key for Context7 authentication
+  - **Default**: Not set (anonymous requests)
+  - **Description**: Provides higher rate limits and authentication with Context7 API. Get your API key at [context7.com/console](https://context7.com/console)
+  - **Example**: `CONTEXT7_API_KEY=your_api_key_here`
+
+- **`PACKAGE_DOCS_RATE_LIMIT`**: Maximum HTTP requests per second to the Context7 API
+  - **Default**: `10`
+  - **Description**: Controls the rate of HTTP requests to prevent overwhelming the Context7 API service
+  - **Example**: `PACKAGE_DOCS_RATE_LIMIT=15` allows up to 15 requests per second
+
+### Security Features
+
+- **Rate Limiting**: Configurable request rate limiting protects against overwhelming external documentation APIs
+- **Input Validation**: Comprehensive validation of library IDs and search parameters
+- **Error Handling**: Graceful handling of network issues and API failures
+- **Trusted Sources**: Only queries the established Context7 documentation service
+
 ## Best Practices
 
 ### Effective Topic Selection
@@ -275,10 +298,10 @@ Use the resolved ID to fetch documentation:
 {"name": "resolve_library_id", "arguments": {"libraryName": "vue"}}
 
 // 2. Get overview
-{"name": "get_library_docs", "arguments": {"context7CompatibleLibraryID": "/vuejs/vue"}}
+{"name": "get_library_documentation", "arguments": {"context7CompatibleLibraryID": "/vuejs/vue"}}
 
 // 3. Focus on specific needs
-{"name": "get_library_docs", "arguments": {"context7CompatibleLibraryID": "/vuejs/vue", "topic": "composition api"}}
+{"name": "get_library_documentation", "arguments": {"context7CompatibleLibraryID": "/vuejs/vue", "topic": "composition api"}}
 ```
 
 ### Problem-Solving Workflow
@@ -287,16 +310,16 @@ Use the resolved ID to fetch documentation:
 {"name": "resolve_library_id", "arguments": {"libraryName": "django"}}
 
 // 2. Get targeted help
-{"name": "get_library_docs", "arguments": {"context7CompatibleLibraryID": "/django/django", "topic": "forms validation", "tokens": 15000}}
+{"name": "get_library_documentation", "arguments": {"context7CompatibleLibraryID": "/django/django", "topic": "forms validation", "tokens": 15000}}
 ```
 
 ### Learning Workflow
 ```json
 // 1. Start with fundamentals
-{"name": "get_library_docs", "arguments": {"context7CompatibleLibraryID": "/facebook/react", "topic": "components"}}
+{"name": "get_library_documentation", "arguments": {"context7CompatibleLibraryID": "/facebook/react", "topic": "components"}}
 
 // 2. Progress to advanced topics
-{"name": "get_library_docs", "arguments": {"context7CompatibleLibraryID": "/facebook/react", "topic": "performance optimization"}}
+{"name": "get_library_documentation", "arguments": {"context7CompatibleLibraryID": "/facebook/react", "topic": "performance optimization"}}
 ```
 
 ## Error Handling

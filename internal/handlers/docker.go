@@ -56,7 +56,7 @@ type GHCRTagsResponse struct {
 }
 
 // GetLatestVersion gets information about Docker image tags
-func (h *DockerHandler) GetLatestVersion(ctx context.Context, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (h *DockerHandler) GetLatestVersion(ctx context.Context, args map[string]any) (*mcp.CallToolResult, error) {
 	h.logger.Info("Getting Docker image tag information")
 
 	// Parse image
@@ -85,7 +85,7 @@ func (h *DockerHandler) GetLatestVersion(ctx context.Context, args map[string]in
 
 	// Parse filter tags
 	var filterTags []string
-	if filterTagsRaw, ok := args["filterTags"].([]interface{}); ok {
+	if filterTagsRaw, ok := args["filterTags"].([]any); ok {
 		for _, tagRaw := range filterTagsRaw {
 			if tag, ok := tagRaw.(string); ok {
 				filterTags = append(filterTags, tag)
@@ -106,12 +106,12 @@ func (h *DockerHandler) GetLatestVersion(ctx context.Context, args map[string]in
 	case "dockerhub":
 		tags, err = h.getDockerHubTags(image, limit, filterTags, includeDigest)
 	case "ghcr":
-		tags, err = h.getGHCRTags(image, limit, filterTags, includeDigest)
+		tags, err = h.getGHCRTags(image, limit, filterTags)
 	case "custom":
 		if customRegistry == "" {
 			return nil, fmt.Errorf("missing required parameter for custom registry: customRegistry")
 		}
-		tags, err = h.getCustomRegistryTags(image, customRegistry, limit, filterTags, includeDigest)
+		tags = h.getCustomRegistryTags(image, customRegistry, filterTags)
 	default:
 		return nil, fmt.Errorf("invalid registry: %s", registry)
 	}
@@ -197,7 +197,7 @@ func (h *DockerHandler) getDockerHubTags(image string, limit int, filterTags []s
 }
 
 // getGHCRTags gets tags from GitHub Container Registry
-func (h *DockerHandler) getGHCRTags(image string, limit int, filterTags []string, includeDigest bool) ([]DockerImageVersion, error) {
+func (h *DockerHandler) getGHCRTags(image string, limit int, filterTags []string) ([]DockerImageVersion, error) {
 	// Check cache first
 	cacheKey := fmt.Sprintf("ghcr:%s", image)
 	if cachedTags, ok := h.cache.Load(cacheKey); ok {
@@ -258,16 +258,17 @@ func (h *DockerHandler) getGHCRTags(image string, limit int, filterTags []string
 }
 
 // getCustomRegistryTags gets tags from a custom registry
-func (h *DockerHandler) getCustomRegistryTags(image, registry string, limit int, filterTags []string, includeDigest bool) ([]DockerImageVersion, error) {
+func (h *DockerHandler) getCustomRegistryTags(image, registry string, filterTags []string) []DockerImageVersion {
 	// This is a placeholder for custom registry implementation
 	// In a real implementation, this would fetch data from the specified registry
-	return []DockerImageVersion{
+	tags := []DockerImageVersion{
 		{
 			Name:     image,
 			Tag:      "latest",
 			Registry: registry,
 		},
-	}, nil
+	}
+	return h.filterTags(tags, 0, filterTags)
 }
 
 // filterTags filters tags based on regex patterns and limit

@@ -2,6 +2,8 @@
 
 The Document Processing tool provides intelligent document conversion capabilities for PDF, DOCX, XLSX, PPTX, HTML, CSV, PNG, and JPG files using the powerful [Docling](https://docling-project.github.io/docling/) library.
 
+**Note:** This tool is disabled by default. To enable it, set the `ENABLE_ADDITIONAL_TOOLS` environment variable to include `process_document`.
+
 ## Overview
 
 Convert documents to structured Markdown while preserving formatting, extracting tables, images, and metadata. The tool offers processing profiles for different use cases, from simple text extraction to advanced diagram analysis with AI models.
@@ -26,7 +28,12 @@ Note: mcp-devtools also providers a PDF extraction tool that's not quite as smar
 
 ## Quick Start
 
-First ensure docling is installed in the environment you'll be running the MCP Server from:
+First, enable the tool by setting the environment variable:
+```bash
+ENABLE_ADDITIONAL_TOOLS="process_document"
+```
+
+Then ensure docling is installed in the environment you'll be running the MCP Server from:
 
 ```shell
 pip install -U pip docling
@@ -177,6 +184,28 @@ The tool will attempt to install Docling automatically if not found.
 DOCLING_PYTHON_PATH="/path/to/python"  # Auto-detected if not set
 ```
 
+The tool automatically detects Python installations with Docling in the following order:
+1. `DOCLING_PYTHON_PATH` environment variable (highest priority)
+2. `.python-version` file in current directory or home directory
+3. Cached Python path from previous detection
+4. Common Python installation paths
+
+**`.python-version` Support:**
+The tool respects `.python-version` files (used by pyenv, asdf, and other version managers) for automatic Python version selection:
+- Checks current working directory first
+- Falls back to home directory if not found in working directory
+- Supports version formats like `3.11.5` or `3.11`
+- Automatically resolves Python paths from:
+  - **pyenv**: `~/.pyenv/versions/`
+  - **asdf**: `~/.asdf/installs/python/`
+  - **UV**: `~/.local/share/uv/python/`
+  - **System**: Homebrew and standard paths
+
+Example `.python-version` file:
+```
+3.11.5
+```
+
 #### Cache Configuration
 ```bash
 DOCLING_CACHE_DIR="~/.mcp-devtools/docling-cache"
@@ -190,8 +219,29 @@ DOCLING_HARDWARE_ACCELERATION="auto"  # auto, mps, cuda, cpu
 
 #### Processing Configuration
 ```bash
-DOCLING_TIMEOUT="300"        # 5 minutes
-DOCLING_MAX_FILE_SIZE="100"  # 100 MB
+DOCLING_TIMEOUT="300"              # Processing timeout in seconds (default: 300 = 5 minutes)
+DOCLING_MAX_FILE_SIZE="100"        # Maximum file size in MB (default: 100 MB)
+DOCLING_MAX_MEMORY_LIMIT="5368709120"  # Memory limit in bytes (default: 5GB)
+MCP_DEVTOOLS_MEMORY_LIMIT="5368709120" # Go application memory limit in bytes (default: 5GB)
+```
+
+#### Memory Management
+
+The tool implements memory limits to prevent runaway memory usage during document processing:
+
+- **Go Application Limit**: Set via `MCP_DEVTOOLS_MEMORY_LIMIT` (default: 5GB)
+  - Soft limit enforced by Go runtime's garbage collector
+  - Automatically triggers more aggressive GC when approaching limit
+
+- **Python Process Limit**: Set via `DOCLING_MAX_MEMORY_LIMIT` (default: 5GB)
+  - Hard limit enforced by OS resource limits
+  - Process terminated if limit exceeded
+
+Example configuration for stricter limits:
+```bash
+# Limit to 2GB for both Go and Python
+MCP_DEVTOOLS_MEMORY_LIMIT="2147483648"
+DOCLING_MAX_MEMORY_LIMIT="2147483648"
 ```
 
 #### OCR Configuration
@@ -202,7 +252,7 @@ DOCLING_OCR_LANGUAGES="en,fr,de"
 #### LLM Configuration (for `llm-external` profile)
 ```bash
 DOCLING_VLM_API_URL="http://localhost:11434/v1"     # OpenAI-compatible endpoint
-DOCLING_VLM_MODEL="qwen2.5vl:7b-q8_0"              # Vision-capable model
+DOCLING_VLM_MODEL="granite_docling"                 # Vision-capable model (default: granite_docling)
 DOCLING_VLM_API_KEY="your-api-key-here"            # API key
 ```
 
@@ -260,7 +310,7 @@ The `llm-external` profile converts diagrams to Mermaid syntax:
 #### LLM Configuration
 ```bash
 DOCLING_VLM_API_URL="http://localhost:11434/v1"
-DOCLING_VLM_MODEL="qwen2.5vl:7b-q8_0"
+DOCLING_VLM_MODEL="granite_docling"  # Default VLM model (qwen2.5vl:7b-q8_0, or any other vision-capable model)
 DOCLING_VLM_API_KEY="your-api-key"
 DOCLING_LLM_MAX_TOKENS="16384"
 DOCLING_LLM_TEMPERATURE="0.1"
@@ -405,7 +455,9 @@ Intelligent caching based on:
 
 **"Python path is required but not found"**
 - Install Python 3.10+ and ensure it's in PATH
-- Or set `DOCLING_PYTHON_PATH` environment variable
+- Set `DOCLING_PYTHON_PATH` environment variable
+- Or create a `.python-version` file in your project directory or home directory
+- Supported version managers: pyenv, asdf, UV
 
 **"Docling not available"**
 - Install: `pip install docling`

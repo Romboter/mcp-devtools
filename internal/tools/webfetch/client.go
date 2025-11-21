@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/utils/httpclient"
 	"github.com/sirupsen/logrus"
 )
 
@@ -32,22 +34,25 @@ type WebClient struct {
 	userAgent  string
 }
 
-// NewWebClient creates a new web client with proper timeouts and context support
+// NewWebClient creates a new web client with proper timeouts, context support and proxy configuration
 func NewWebClient() *WebClient {
+	// Use shared HTTP client factory with proxy support
+	client := httpclient.NewHTTPClientWithProxy(DefaultTimeout)
+
+	// Configure redirect handling
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// Allow up to 10 redirects
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		// Preserve User-Agent on redirects
+		req.Header.Set("User-Agent", UserAgent)
+		return nil
+	}
+
 	return &WebClient{
-		httpClient: &http.Client{
-			Timeout: DefaultTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				// Allow up to 10 redirects
-				if len(via) >= 10 {
-					return fmt.Errorf("too many redirects")
-				}
-				// Preserve User-Agent on redirects
-				req.Header.Set("User-Agent", UserAgent)
-				return nil
-			},
-		},
-		userAgent: UserAgent,
+		httpClient: client,
+		userAgent:  UserAgent,
 	}
 }
 
@@ -91,6 +96,11 @@ func (c *WebClient) FetchContent(ctx context.Context, logger *logrus.Logger, tar
 		return nil, fmt.Errorf("unsupported URL scheme: %s (only http and https are supported)", parsedURL.Scheme)
 	}
 
+	// Check domain access control via security system
+	if err := security.CheckDomainAccess(parsedURL.Hostname()); err != nil {
+		return nil, err
+	}
+
 	logger.WithField("url", targetURL).Debug("Fetching URL content")
 
 	// Create request with context
@@ -132,7 +142,6 @@ func (c *WebClient) FetchContent(ctx context.Context, logger *logrus.Logger, tar
 	// Check for HTTP errors
 	if resp.StatusCode >= 400 {
 		return &FetchURLResponse{
-			URL:              targetURL,
 			ContentType:      resp.Header.Get("Content-Type"),
 			StatusCode:       resp.StatusCode,
 			Content:          "",
@@ -189,7 +198,6 @@ func (c *WebClient) FetchContent(ctx context.Context, logger *logrus.Logger, tar
 	}).Debug("Successfully fetched content")
 
 	response := &FetchURLResponse{
-		URL:              targetURL,
 		Content:          string(body),
 		Truncated:        false, // Will be set later during pagination
 		StartIndex:       0,

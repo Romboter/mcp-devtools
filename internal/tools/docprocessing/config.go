@@ -7,12 +7,49 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sammcj/mcp-devtools/internal/config"
+	"github.com/sammcj/mcp-devtools/internal/security"
 )
+
+const (
+	// Document processing security limits
+	DefaultMaxMemoryLimit             = int64(5 * 1024 * 1024 * 1024) // 5GB default memory limit
+	DefaultMaxFileSizeMB              = 100                           // Default file size in MB
+	DocProcessingMaxMemoryLimitEnvVar = "DOCLING_MAX_MEMORY_LIMIT"
+	DocProcessingMaxFileSizeEnvVar    = "DOCLING_MAX_FILE_SIZE"
+)
+
+// Supported file types for document processing
+var SupportedFileTypes = map[string]bool{
+	// Document formats
+	".pdf":  true,
+	".docx": true,
+	".doc":  true, // Legacy Word format
+	".xlsx": true,
+	".xls":  true, // Legacy Excel format
+	".pptx": true,
+	".ppt":  true, // Legacy PowerPoint format
+	".txt":  true, // Plain text
+	".md":   true, // Markdown
+	".rtf":  true, // Rich Text Format
+	// Web formats
+	".html": true,
+	".htm":  true,
+	".csv":  true,
+	// Image formats
+	".png":  true,
+	".jpg":  true,
+	".jpeg": true,
+	".gif":  true,
+	".bmp":  true,
+	".tiff": true,
+	".tif":  true,
+}
 
 // Config holds the configuration for document processing
 type Config struct {
@@ -27,8 +64,9 @@ type Config struct {
 	HardwareAcceleration HardwareAcceleration // Hardware acceleration mode
 
 	// Processing Configuration
-	Timeout     int // Processing timeout in seconds
-	MaxFileSize int // Maximum file size in MB
+	Timeout        int   // Processing timeout in seconds
+	MaxFileSize    int   // Maximum file size in MB
+	MaxMemoryLimit int64 // Maximum memory limit in bytes
 
 	// OCR Configuration
 	OCRLanguages []string // Default OCR languages
@@ -50,10 +88,11 @@ func DefaultConfig() *Config {
 		CacheDir:             defaultCacheDir,
 		CacheEnabled:         true,
 		HardwareAcceleration: HardwareAccelerationAuto,
-		Timeout:              300, // 5 minutes
-		MaxFileSize:          100, // 100 MB
+		Timeout:              300,                   // 5 minutes
+		MaxFileSize:          DefaultMaxFileSizeMB,  // 100 MB
+		MaxMemoryLimit:       DefaultMaxMemoryLimit, // 5GB
 		OCRLanguages:         []string{"en"},
-		VisionModel:          "SmolDocling",
+		VisionModel:          "granite_docling",
 	}
 }
 
@@ -104,6 +143,12 @@ func LoadConfig() *Config {
 		}
 	}
 
+	if maxMemoryLimit := os.Getenv("DOCLING_MAX_MEMORY_LIMIT"); maxMemoryLimit != "" {
+		if limit, err := strconv.ParseInt(maxMemoryLimit, 10, 64); err == nil && limit > 0 {
+			config.MaxMemoryLimit = limit
+		}
+	}
+
 	// OCR Configuration
 	if ocrLangs := os.Getenv("DOCLING_OCR_LANGUAGES"); ocrLangs != "" {
 		languages := strings.Split(ocrLangs, ",")
@@ -148,6 +193,11 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max file size must be greater than 0")
 	}
 
+	// Validate max memory limit
+	if c.MaxMemoryLimit <= 0 {
+		return fmt.Errorf("max memory limit must be greater than 0")
+	}
+
 	// Validate OCR languages
 	if len(c.OCRLanguages) == 0 {
 		return fmt.Errorf("at least one OCR language must be specified")
@@ -167,8 +217,140 @@ func (c *Config) EnsureCacheDir() error {
 		return nil
 	}
 
-	if err := os.MkdirAll(c.CacheDir, 0755); err != nil {
+	// Security: Check file access for cache directory
+	if err := security.CheckFileAccess(c.CacheDir); err != nil {
+		return fmt.Errorf("cache directory access denied: %w", err)
+	}
+
+	if err := os.MkdirAll(c.CacheDir, 0700); err != nil {
 		return fmt.Errorf("failed to create cache directory %s: %w", c.CacheDir, err)
+	}
+
+	return nil
+}
+
+// CleanupTemporaryFiles performs cleanup of temporary files and directories
+func (c *Config) CleanupTemporaryFiles() error {
+	var errors []string
+
+	// Clean up embedded scripts temporary directory
+	if err := CleanupEmbeddedScripts(); err != nil {
+		errors = append(errors, fmt.Sprintf("embedded scripts cleanup failed: %v", err))
+	}
+
+	// Clean up old cache files (older than configured max age)
+	if c.CacheEnabled && c.CacheDir != "" {
+		maxAge := 6 * 7 * 24 * time.Hour // 6 weeks default
+		if maxAgeEnv := os.Getenv("DOCLING_CACHE_MAX_AGE_HOURS"); maxAgeEnv != "" {
+			if hours, err := strconv.Atoi(maxAgeEnv); err == nil && hours > 0 {
+				maxAge = time.Duration(hours) * time.Hour
+			}
+		}
+
+		if err := c.cleanupCacheFiles(maxAge); err != nil {
+			errors = append(errors, fmt.Sprintf("cache cleanup failed: %v", err))
+		}
+	}
+
+	// Clean up system temporary directory for mcp-devtools files
+	c.cleanupSystemTempFiles()
+
+	if len(errors) > 0 {
+		return fmt.Errorf("cleanup errors: %s", strings.Join(errors, "; "))
+	}
+
+	return nil
+}
+
+// cleanupCacheFiles removes old cache files
+func (c *Config) cleanupCacheFiles(maxAge time.Duration) error {
+	if !c.CacheEnabled || c.CacheDir == "" {
+		return nil
+	}
+
+	cutoffTime := time.Now().Add(-maxAge)
+	return filepath.Walk(c.CacheDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip files we can't access
+		}
+
+		if !info.IsDir() && info.ModTime().Before(cutoffTime) {
+			_ = os.Remove(path) // Silently remove old files
+		}
+
+		return nil
+	})
+}
+
+// cleanupSystemTempFiles removes old temporary files created by mcp-devtools
+func (c *Config) cleanupSystemTempFiles() {
+	tempDir := os.TempDir()
+	cutoffTime := time.Now().Add(-24 * time.Hour) // Remove files older than 24 hours
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		return // Silently fail if we can't read temp directory
+	}
+
+	for _, entry := range entries {
+		// Only clean up mcp-devtools related temp files
+		if !strings.HasPrefix(entry.Name(), "mcp-devtools-") {
+			continue
+		}
+
+		filePath := filepath.Join(tempDir, entry.Name())
+		if info, err := os.Stat(filePath); err == nil {
+			if info.ModTime().Before(cutoffTime) {
+				if entry.IsDir() {
+					_ = os.RemoveAll(filePath)
+				} else {
+					_ = os.Remove(filePath)
+				}
+			}
+		}
+	}
+}
+
+// GetMaxMemoryLimit returns the configured maximum memory limit in bytes
+func (c *Config) GetMaxMemoryLimit() int64 {
+	return c.MaxMemoryLimit
+}
+
+// ValidateFileSize validates that the file size is within limits
+func (c *Config) ValidateFileSize(fileSizeBytes int64) error {
+	maxSizeBytes := int64(c.MaxFileSize) * 1024 * 1024 // Convert MB to bytes
+	if fileSizeBytes > maxSizeBytes {
+		sizeMB := float64(fileSizeBytes) / (1024 * 1024)
+		maxSizeMB := float64(maxSizeBytes) / (1024 * 1024)
+		return fmt.Errorf("document file size %.1fMB exceeds maximum allowed size of %.1fMB (use %s environment variable to adjust limit)", sizeMB, maxSizeMB, DocProcessingMaxFileSizeEnvVar)
+	}
+	return nil
+}
+
+// ValidateMemoryLimit validates that memory usage is within limits
+func (c *Config) ValidateMemoryLimit() error {
+	// This is a placeholder for future memory monitoring implementation
+	// For now, we rely on the file size limits and Python process limits
+	// to prevent excessive memory usage during document processing
+	if c.MaxMemoryLimit <= 0 {
+		return fmt.Errorf("memory limit must be greater than 0")
+	}
+	return nil
+}
+
+// ValidateFileType validates that the file type is supported for processing
+func (c *Config) ValidateFileType(filePath string) error {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext == "" {
+		return fmt.Errorf("file has no extension, unable to determine file type")
+	}
+
+	if !SupportedFileTypes[ext] {
+		supportedTypes := make([]string, 0, len(SupportedFileTypes))
+		for fileType := range SupportedFileTypes {
+			supportedTypes = append(supportedTypes, fileType)
+		}
+		return fmt.Errorf("unsupported file type '%s'. Supported types: %s", ext, strings.Join(supportedTypes, ", "))
 	}
 
 	return nil
@@ -184,6 +366,7 @@ func (c *Config) GetSystemInfo() *SystemInfo {
 		CacheDirectory:   c.CacheDir,
 		CacheEnabled:     c.CacheEnabled,
 		MaxFileSize:      c.MaxFileSize,
+		MaxMemoryLimit:   c.MaxMemoryLimit,
 		DefaultTimeout:   c.Timeout,
 	}
 
@@ -202,8 +385,243 @@ func (c *Config) GetSystemInfo() *SystemInfo {
 	return info
 }
 
+// readPythonVersion reads the Python version from .python-version file
+// It checks the current working directory first, then the user's home directory
+func readPythonVersion() string {
+	// Check current working directory
+	cwd, err := os.Getwd()
+	if err == nil {
+		versionFile := filepath.Join(cwd, ".python-version")
+		if version := readVersionFile(versionFile); version != "" {
+			return version
+		}
+	}
+
+	// Check home directory
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		versionFile := filepath.Join(homeDir, ".python-version")
+		if version := readVersionFile(versionFile); version != "" {
+			return version
+		}
+	}
+
+	return ""
+}
+
+// readVersionFile reads and parses a .python-version file
+func readVersionFile(filePath string) string {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+
+	// Parse version - typically just a version string like "3.11.5" or "3.11"
+	version := strings.TrimSpace(string(data))
+	// Remove any comments (lines starting with #)
+	lines := strings.SplitSeq(version, "\n")
+	for line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			return line
+		}
+	}
+
+	return ""
+}
+
+// resolvePythonFromVersion attempts to find Python executable for a specific version
+// It tries multiple version managers in this order: pyenv, asdf, then direct paths
+func resolvePythonFromVersion(version string) string {
+	// Try pyenv first (most common for Python version management)
+	if pythonPath := resolvePyenvPython(version); pythonPath != "" {
+		return pythonPath
+	}
+
+	// Try asdf
+	if pythonPath := resolveAsdfPython(version); pythonPath != "" {
+		return pythonPath
+	}
+
+	// Try UV's Python installations
+	if pythonPath := resolveUVPython(version); pythonPath != "" {
+		return pythonPath
+	}
+
+	// Try system installations matching the version
+	if pythonPath := resolveSystemPython(version); pythonPath != "" {
+		return pythonPath
+	}
+
+	return ""
+}
+
+// resolvePyenvPython resolves Python path using pyenv
+func resolvePyenvPython(version string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	// Check if pyenv is installed
+	pyenvRoot := os.Getenv("PYENV_ROOT")
+	if pyenvRoot == "" {
+		pyenvRoot = filepath.Join(homeDir, ".pyenv")
+	}
+
+	// Try exact version match first
+	pythonPath := filepath.Join(pyenvRoot, "versions", version, "bin", "python")
+	if _, err := os.Stat(pythonPath); err == nil {
+		return pythonPath
+	}
+
+	// Try with python3
+	pythonPath = filepath.Join(pyenvRoot, "versions", version, "bin", "python3")
+	if _, err := os.Stat(pythonPath); err == nil {
+		return pythonPath
+	}
+
+	// Try finding a version that starts with the specified version (e.g., 3.11 matches 3.11.5)
+	versionsDir := filepath.Join(pyenvRoot, "versions")
+	if entries, err := os.ReadDir(versionsDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), version) {
+				pythonPath := filepath.Join(versionsDir, entry.Name(), "bin", "python")
+				if _, err := os.Stat(pythonPath); err == nil {
+					return pythonPath
+				}
+				pythonPath = filepath.Join(versionsDir, entry.Name(), "bin", "python3")
+				if _, err := os.Stat(pythonPath); err == nil {
+					return pythonPath
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// resolveAsdfPython resolves Python path using asdf
+func resolveAsdfPython(version string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	asdfDir := os.Getenv("ASDF_DIR")
+	if asdfDir == "" {
+		asdfDir = filepath.Join(homeDir, ".asdf")
+	}
+
+	// Try exact version match
+	pythonPath := filepath.Join(asdfDir, "installs", "python", version, "bin", "python")
+	if _, err := os.Stat(pythonPath); err == nil {
+		return pythonPath
+	}
+
+	pythonPath = filepath.Join(asdfDir, "installs", "python", version, "bin", "python3")
+	if _, err := os.Stat(pythonPath); err == nil {
+		return pythonPath
+	}
+
+	// Try finding a version that starts with the specified version
+	installsDir := filepath.Join(asdfDir, "installs", "python")
+	if entries, err := os.ReadDir(installsDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), version) {
+				pythonPath := filepath.Join(installsDir, entry.Name(), "bin", "python")
+				if _, err := os.Stat(pythonPath); err == nil {
+					return pythonPath
+				}
+				pythonPath = filepath.Join(installsDir, entry.Name(), "bin", "python3")
+				if _, err := os.Stat(pythonPath); err == nil {
+					return pythonPath
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// resolveUVPython resolves Python path from UV installations
+func resolveUVPython(version string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	// UV typically stores Python in ~/.local/share/uv/python or ~/.uv/python
+	uvPaths := []string{
+		filepath.Join(homeDir, ".local", "share", "uv", "python"),
+		filepath.Join(homeDir, ".uv", "python"),
+	}
+
+	for _, uvPath := range uvPaths {
+		if entries, err := os.ReadDir(uvPath); err == nil {
+			for _, entry := range entries {
+				// UV uses directory names like "cpython-3.11.5-macos-aarch64" or similar
+				if entry.IsDir() && strings.HasPrefix(entry.Name(), "cpython-"+version) {
+					binPath := filepath.Join(uvPath, entry.Name(), "bin", "python")
+					if _, err := os.Stat(binPath); err == nil {
+						return binPath
+					}
+					binPath = filepath.Join(uvPath, entry.Name(), "bin", "python3")
+					if _, err := os.Stat(binPath); err == nil {
+						return binPath
+					}
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// resolveSystemPython tries to find a system Python matching the version
+func resolveSystemPython(version string) string {
+	// Extract major.minor version (e.g., "3.11" from "3.11.5")
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	majorMinor := parts[0] + "." + parts[1]
+
+	// Try python3.X first
+	pythonName := "python" + majorMinor
+	if path, err := findExecutable(pythonName); err == nil {
+		return path
+	}
+
+	// Try with full version if provided
+	if len(parts) >= 3 {
+		pythonName := "python" + version
+		if path, err := findExecutable(pythonName); err == nil {
+			return path
+		}
+	}
+
+	// Check common installation paths on macOS
+	if runtime.GOOS == "darwin" {
+		brewPaths := []string{
+			fmt.Sprintf("/opt/homebrew/opt/python@%s/bin/python%s", majorMinor, majorMinor),
+			fmt.Sprintf("/opt/homebrew/opt/python@%s/bin/python3", majorMinor),
+			fmt.Sprintf("/usr/local/opt/python@%s/bin/python%s", majorMinor, majorMinor),
+			fmt.Sprintf("/usr/local/opt/python@%s/bin/python3", majorMinor),
+		}
+
+		for _, path := range brewPaths {
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
+		}
+	}
+
+	return ""
+}
+
 // detectPythonPath attempts to find a suitable Python executable with docling
-// Priority order: 1. Environment variable, 2. State file, 3. Discovery, 4. Auto-install + update state
+// Priority order: 1. Environment variable, 2. .python-version file, 3. State file, 4. Discovery
 func detectPythonPath() string {
 	// 1. Check environment variable first (highest priority)
 	if envPath := os.Getenv("DOCLING_PYTHON_PATH"); envPath != "" {
@@ -212,8 +630,21 @@ func detectPythonPath() string {
 		}
 	}
 
-	// 2. Check state file (if not stale)
+	// Get state object once for efficiency
 	state := config.GetGlobalState()
+
+	// 2. Check for .python-version file and respect it
+	if pythonVersion := readPythonVersion(); pythonVersion != "" {
+		if pythonPath := resolvePythonFromVersion(pythonVersion); pythonPath != "" {
+			if isDoclingAvailableInPython(pythonPath) {
+				// Update state file with discovered path for faster startup next time
+				_ = state.SetPythonPath(pythonPath, true)
+				return pythonPath
+			}
+		}
+	}
+
+	// 3. Check state file (if not stale)
 	if !state.IsStale() {
 		cachedPath, doclingAvailable := state.GetPythonPath()
 		if cachedPath != "" && doclingAvailable && isDoclingAvailableInPython(cachedPath) {
@@ -221,7 +652,7 @@ func detectPythonPath() string {
 		}
 	}
 
-	// 3. Discovery - find available Python with docling
+	// 4. Discovery - find available Python with docling
 	pythonPaths := getCommonPythonPaths()
 	for _, pythonPath := range pythonPaths {
 		if isDoclingAvailableInPython(pythonPath) {
@@ -530,10 +961,8 @@ func (c *Config) ResolveHardwareAcceleration() HardwareAcceleration {
 
 	// Prefer MPS on macOS, then CUDA, then CPU
 	for _, accel := range []HardwareAcceleration{HardwareAccelerationMPS, HardwareAccelerationCUDA, HardwareAccelerationCPU} {
-		for _, avail := range available {
-			if accel == avail {
-				return accel
-			}
+		if slices.Contains(available, accel) {
+			return accel
 		}
 	}
 
@@ -621,6 +1050,11 @@ func (c *Config) ValidateCertificates() error {
 		return nil // No certificates configured, which is fine
 	}
 
+	// Security: Check file access for certificate path
+	if err := security.CheckFileAccess(c.ExtraCACerts); err != nil {
+		return fmt.Errorf("certificate path access denied: %w", err)
+	}
+
 	// Check if the certificate path exists
 	info, err := os.Stat(c.ExtraCACerts)
 	if err != nil {
@@ -652,7 +1086,7 @@ func (c *Config) ValidateCertificates() error {
 			return fmt.Errorf("certificate directory contains no certificate files: %s", c.ExtraCACerts)
 		}
 	} else {
-		// If it's a file, check if it's readable
+		// If it's a file, check if it's readable (security access was already checked above)
 		file, err := os.Open(c.ExtraCACerts)
 		if err != nil {
 			return fmt.Errorf("cannot read certificate file: %s", c.ExtraCACerts)

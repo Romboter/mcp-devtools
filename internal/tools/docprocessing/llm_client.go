@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
 
 // Environment variable constants for LLM integration
@@ -69,14 +69,14 @@ type LLMConfig struct {
 
 // DiagramAnalysis represents the result of LLM-based diagram analysis
 type DiagramAnalysis struct {
-	Description    string                 `json:"description"`
-	DiagramType    string                 `json:"diagram_type"`
-	MermaidCode    string                 `json:"mermaid_code"`
-	Elements       []DiagramElement       `json:"elements"`
-	Confidence     float64                `json:"confidence"`
-	Properties     map[string]interface{} `json:"properties"`
-	ProcessingTime time.Duration          `json:"processing_time"`
-	TokenUsage     *TokenUsage            `json:"token_usage,omitempty"` // Token usage from LLM provider (if available)
+	Description    string           `json:"description"`
+	DiagramType    string           `json:"diagram_type"`
+	MermaidCode    string           `json:"mermaid_code"`
+	Elements       []DiagramElement `json:"elements"`
+	Confidence     float64          `json:"confidence"`
+	Properties     map[string]any   `json:"properties"`
+	ProcessingTime time.Duration    `json:"processing_time"`
+	TokenUsage     *TokenUsage      `json:"token_usage,omitempty"` // Token usage from LLM provider (if available)
 }
 
 // NewDiagramLLMClient creates a new LLM client for diagram analysis using OpenAI API
@@ -160,10 +160,7 @@ func (c *DiagramLLMClient) AnalyseDiagram(diagram *ExtractedDiagram) (*DiagramAn
 	responseText := response.Choices[0].Message.Content
 
 	// Parse response and extract analysis
-	analysis, err := c.parseAnalysisResponse(responseText, diagram)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
-	}
+	analysis := c.parseAnalysisResponse(responseText, diagram)
 
 	// Extract token usage if available
 	if usage := response.Usage; usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0 {
@@ -179,7 +176,7 @@ func (c *DiagramLLMClient) AnalyseDiagram(diagram *ExtractedDiagram) (*DiagramAn
 		if !validateMermaidSyntax(analysis.MermaidCode) {
 			// Don't fail completely, just log the issue
 			if analysis.Properties == nil {
-				analysis.Properties = make(map[string]interface{})
+				analysis.Properties = make(map[string]any)
 			}
 			analysis.Properties["mermaid_validation_failed"] = true
 		}
@@ -196,14 +193,14 @@ func (c *DiagramLLMClient) buildDiagramPrompt(diagram *ExtractedDiagram) string 
 }
 
 // parseAnalysisResponse parses the LLM response and extracts diagram analysis
-func (c *DiagramLLMClient) parseAnalysisResponse(response string, originalDiagram *ExtractedDiagram) (*DiagramAnalysis, error) {
+func (c *DiagramLLMClient) parseAnalysisResponse(response string, originalDiagram *ExtractedDiagram) *DiagramAnalysis {
 	// Try to extract JSON from the response
 	jsonStart := strings.Index(response, "{")
 	jsonEnd := strings.LastIndex(response, "}")
 
 	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
 		// Fallback: create analysis from text response
-		return c.createFallbackAnalysis(response, originalDiagram), nil
+		return c.createFallbackAnalysis(response, originalDiagram)
 	}
 
 	jsonStr := response[jsonStart : jsonEnd+1]
@@ -211,7 +208,7 @@ func (c *DiagramLLMClient) parseAnalysisResponse(response string, originalDiagra
 	var analysis DiagramAnalysis
 	if err := json.Unmarshal([]byte(jsonStr), &analysis); err != nil {
 		// Fallback: create analysis from text response
-		return c.createFallbackAnalysis(response, originalDiagram), nil
+		return c.createFallbackAnalysis(response, originalDiagram)
 	}
 
 	// Ensure confidence is reasonable
@@ -227,7 +224,7 @@ func (c *DiagramLLMClient) parseAnalysisResponse(response string, originalDiagra
 		analysis.Description = "LLM-enhanced diagram analysis"
 	}
 
-	return &analysis, nil
+	return &analysis
 }
 
 // createFallbackAnalysis creates a basic analysis when JSON parsing fails
@@ -236,7 +233,7 @@ func (c *DiagramLLMClient) createFallbackAnalysis(response string, originalDiagr
 		Description: response,
 		DiagramType: originalDiagram.DiagramType,
 		Confidence:  0.5, // Lower confidence for fallback
-		Properties:  make(map[string]interface{}),
+		Properties:  make(map[string]any),
 	}
 
 	// Try to extract Mermaid code from response

@@ -27,30 +27,31 @@ func (t *SwiftTool) Definition() mcp.Tool {
 		mcp.WithArray("dependencies",
 			mcp.Description("Array of Swift package dependencies"),
 			mcp.Required(),
+			mcp.WithStringItems(),
 		),
 		mcp.WithObject("constraints",
 			mcp.Description("Optional constraints for specific packages"),
-			mcp.Properties(map[string]interface{}{}),
+			mcp.Properties(map[string]any{}),
 		),
 	)
 }
 
 // Execute executes the tool's logic
-func (t *SwiftTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *SwiftTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Getting latest Swift package versions")
 
 	// Parse dependencies
-	depsRaw, ok := args["dependencies"].([]interface{})
+	depsRaw, ok := args["dependencies"].([]any)
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter: dependencies")
 	}
 
 	// Parse constraints
 	var constraints packageversions.VersionConstraints
-	if constraintsRaw, ok := args["constraints"].(map[string]interface{}); ok {
+	if constraintsRaw, ok := args["constraints"].(map[string]any); ok {
 		constraints = make(packageversions.VersionConstraints)
 		for name, constraintRaw := range constraintsRaw {
-			if constraintMap, ok := constraintRaw.(map[string]interface{}); ok {
+			if constraintMap, ok := constraintRaw.(map[string]any); ok {
 				var constraint packageversions.VersionConstraint
 				if majorVersion, ok := constraintMap["majorVersion"].(float64); ok {
 					majorInt := int(majorVersion)
@@ -67,7 +68,7 @@ func (t *SwiftTool) Execute(ctx context.Context, logger *logrus.Logger, cache *s
 	// Convert to SwiftDependency
 	var dependencies []packageversions.SwiftDependency
 	for _, depRaw := range depsRaw {
-		if depMap, ok := depRaw.(map[string]interface{}); ok {
+		if depMap, ok := depRaw.(map[string]any); ok {
 			var dep packageversions.SwiftDependency
 
 			// Parse URL
@@ -92,16 +93,12 @@ func (t *SwiftTool) Execute(ctx context.Context, logger *logrus.Logger, cache *s
 	}
 
 	// Get latest versions
-	results, err := t.getLatestVersions(logger, cache, dependencies, constraints)
-	if err != nil {
-		return nil, err
-	}
-
+	results := t.getLatestVersions(logger, cache, dependencies, constraints)
 	return packageversions.NewToolResultJSON(results)
 }
 
 // getLatestVersions gets the latest versions for Swift packages
-func (t *SwiftTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, dependencies []packageversions.SwiftDependency, constraints packageversions.VersionConstraints) ([]packageversions.PackageVersion, error) {
+func (t *SwiftTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, dependencies []packageversions.SwiftDependency, constraints packageversions.VersionConstraints) []packageversions.PackageVersion {
 	var results []packageversions.PackageVersion
 
 	for _, dep := range dependencies {
@@ -136,7 +133,7 @@ func (t *SwiftTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 			logger.WithField("package", packageName).Debug("Using cached Swift package version")
 			result := cachedVersion.(packageversions.PackageVersion)
 			if currentVersion != "" {
-				result.CurrentVersion = packageversions.StringPtr(currentVersion)
+				result.CurrentVersion = packageversions.StringPtrUnlessLatest(currentVersion)
 			}
 			results = append(results, result)
 			continue
@@ -157,7 +154,7 @@ func (t *SwiftTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 				SkipReason:    fmt.Sprintf("Failed to fetch package info: %v", err),
 			}
 			if currentVersion != "" {
-				result.CurrentVersion = packageversions.StringPtr(currentVersion)
+				result.CurrentVersion = packageversions.StringPtrUnlessLatest(currentVersion)
 			}
 			results = append(results, result)
 			continue
@@ -182,7 +179,7 @@ func (t *SwiftTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 			Registry:      "swift",
 		}
 		if currentVersion != "" {
-			result.CurrentVersion = packageversions.StringPtr(currentVersion)
+			result.CurrentVersion = packageversions.StringPtrUnlessLatest(currentVersion)
 		}
 
 		// Cache result
@@ -196,7 +193,7 @@ func (t *SwiftTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
 
-	return results, nil
+	return results
 }
 
 // getLatestVersion gets the latest version for a Swift package

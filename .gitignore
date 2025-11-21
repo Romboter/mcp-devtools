@@ -46,7 +46,7 @@ Thumbs.db
 bin/
 dist/
 
-.claude
+.claude/settings.local.json
 
 **/*/extracted_images
 **/*/exported_output.md
@@ -60,3 +60,27 @@ DOCLING_DEV_PLAN.md
 
 tests/docprocessing/*.md
 tests/docprocessing/*.png
+tmp_*
+
+# Security scan outputs
+SECURITY_HARDENING.md
+gosec.out
+.mcp-scan
+mcp-scan.out
+semgrep.out
+**/*sbom*.json
+**/*vulnerability*scan*.json
+**/vulnerability-report.json
+**/*.sarif
+
+# serena https://github.com/oraios/serena
+!*.serena/project.yml
+.serena/memories
+.serena/cache
+.serena/logs
+
+# specify, just testing it out for now
+.specify
+.claude/commands/plan.md
+.claude/commands/specify.md
+.claude/commands/tasks.md

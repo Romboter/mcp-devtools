@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sammcj/mcp-devtools/internal/security"
 )
 
 // processDocument processes the document using the Python wrapper
@@ -22,6 +25,10 @@ func (t *DocumentProcessorTool) processDocument(req *DocumentProcessingRequest) 
 
 	// Get and validate script path
 	scriptPath := t.config.GetScriptPath()
+	// Security: Check file access for script path
+	if err := security.CheckFileAccess(scriptPath); err != nil {
+		return nil, fmt.Errorf("script access denied: %w", err)
+	}
 	if _, err := os.Stat(scriptPath); err != nil {
 		return nil, fmt.Errorf("python script not found at %s: %w", scriptPath, err)
 	}
@@ -111,6 +118,11 @@ func (t *DocumentProcessorTool) processDocument(req *DocumentProcessingRequest) 
 	vlmEnv := t.getVLMEnvironmentVariables()
 	cmd.Env = append(cmd.Env, vlmEnv...)
 
+	// Apply resource limits to the Python subprocess
+	if err := setProcessResourceLimits(cmd, t.config.MaxMemoryLimit); err != nil {
+		return nil, fmt.Errorf("failed to set process resource limits: %w", err)
+	}
+
 	// Capture both stdout and stderr for better debugging
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -129,7 +141,7 @@ func (t *DocumentProcessorTool) processDocument(req *DocumentProcessingRequest) 
 	// Log outputs for debugging (but not to stdout/stderr to avoid MCP protocol issues)
 	// Write to a debug log file instead
 	if debugFile, debugErr := os.OpenFile(filepath.Join(os.Getenv("HOME"), ".mcp-devtools", "debug.log"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); debugErr == nil {
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); debugErr == nil {
 		defer func() { _ = debugFile.Close() }()
 		_, _ = fmt.Fprintf(debugFile, "[%s] Command: %s\n", time.Now().Format("2006-01-02 15:04:05"), cmdStr)
 		_, _ = fmt.Fprintf(debugFile, "[%s] Exit Code: %v\n", time.Now().Format("2006-01-02 15:04:05"), err)
@@ -161,7 +173,7 @@ func (t *DocumentProcessorTool) processDocument(req *DocumentProcessingRequest) 
 	output := []byte(stdoutStr)
 
 	// Parse Python script output
-	var pythonResult map[string]interface{}
+	var pythonResult map[string]any
 	if err := json.Unmarshal(output, &pythonResult); err != nil {
 		return nil, fmt.Errorf("failed to parse python output: %w, raw output: %s", err, string(output))
 	}
@@ -191,22 +203,22 @@ func (t *DocumentProcessorTool) processDocument(req *DocumentProcessingRequest) 
 	}
 
 	// Extract metadata
-	if metaData, ok := pythonResult["metadata"].(map[string]interface{}); ok {
+	if metaData, ok := pythonResult["metadata"].(map[string]any); ok {
 		response.Metadata = t.parseMetadata(metaData)
 	}
 
 	// Extract processing info
-	if procInfo, ok := pythonResult["processing_info"].(map[string]interface{}); ok {
+	if procInfo, ok := pythonResult["processing_info"].(map[string]any); ok {
 		response.ProcessingInfo = t.parseProcessingInfo(procInfo)
 	}
 
 	// Extract diagrams if available
-	if diagramsData, ok := pythonResult["diagrams"].([]interface{}); ok {
+	if diagramsData, ok := pythonResult["diagrams"].([]any); ok {
 		response.Diagrams = t.parseDiagrams(diagramsData)
 	}
 
 	// Extract images if available
-	if imagesData, ok := pythonResult["images"].([]interface{}); ok {
+	if imagesData, ok := pythonResult["images"].([]any); ok {
 		response.Images = t.parseImages(imagesData)
 	}
 
@@ -238,7 +250,7 @@ func (t *DocumentProcessorTool) processDocument(req *DocumentProcessingRequest) 
 }
 
 // parseMetadata converts the Python metadata to Go struct
-func (t *DocumentProcessorTool) parseMetadata(data map[string]interface{}) *DocumentMetadata {
+func (t *DocumentProcessorTool) parseMetadata(data map[string]any) *DocumentMetadata {
 	metadata := &DocumentMetadata{}
 
 	if title, ok := data["title"].(string); ok {
@@ -261,7 +273,7 @@ func (t *DocumentProcessorTool) parseMetadata(data map[string]interface{}) *Docu
 }
 
 // parseProcessingInfo converts the Python processing info to Go struct
-func (t *DocumentProcessorTool) parseProcessingInfo(data map[string]interface{}) ProcessingInfo {
+func (t *DocumentProcessorTool) parseProcessingInfo(data map[string]any) ProcessingInfo {
 	info := ProcessingInfo{}
 
 	if mode, ok := data["processing_mode"].(string); ok {
@@ -276,7 +288,7 @@ func (t *DocumentProcessorTool) parseProcessingInfo(data map[string]interface{})
 	if ocrEnabled, ok := data["ocr_enabled"].(bool); ok {
 		info.OCREnabled = ocrEnabled
 	}
-	if ocrLangs, ok := data["ocr_languages"].([]interface{}); ok {
+	if ocrLangs, ok := data["ocr_languages"].([]any); ok {
 		for _, lang := range ocrLangs {
 			if langStr, ok := lang.(string); ok {
 				info.OCRLanguages = append(info.OCRLanguages, langStr)
@@ -295,11 +307,11 @@ func (t *DocumentProcessorTool) parseProcessingInfo(data map[string]interface{})
 }
 
 // parseDiagrams converts the Python diagrams data to Go structs
-func (t *DocumentProcessorTool) parseDiagrams(data []interface{}) []ExtractedDiagram {
+func (t *DocumentProcessorTool) parseDiagrams(data []any) []ExtractedDiagram {
 	var diagrams []ExtractedDiagram
 
 	for _, item := range data {
-		if diagramData, ok := item.(map[string]interface{}); ok {
+		if diagramData, ok := item.(map[string]any); ok {
 			diagram := ExtractedDiagram{}
 
 			if id, ok := diagramData["id"].(string); ok {
@@ -331,7 +343,7 @@ func (t *DocumentProcessorTool) parseDiagrams(data []interface{}) []ExtractedDia
 			}
 
 			// Parse bounding box
-			if bboxData, ok := diagramData["bounding_box"].(map[string]interface{}); ok {
+			if bboxData, ok := diagramData["bounding_box"].(map[string]any); ok {
 				bbox := &BoundingBox{}
 				if x, ok := bboxData["x"].(float64); ok {
 					bbox.X = x
@@ -349,9 +361,9 @@ func (t *DocumentProcessorTool) parseDiagrams(data []interface{}) []ExtractedDia
 			}
 
 			// Parse elements
-			if elementsData, ok := diagramData["elements"].([]interface{}); ok {
+			if elementsData, ok := diagramData["elements"].([]any); ok {
 				for _, elemItem := range elementsData {
-					if elemData, ok := elemItem.(map[string]interface{}); ok {
+					if elemData, ok := elemItem.(map[string]any); ok {
 						element := DiagramElement{}
 						if elemType, ok := elemData["type"].(string); ok {
 							element.Type = elemType
@@ -364,7 +376,7 @@ func (t *DocumentProcessorTool) parseDiagrams(data []interface{}) []ExtractedDia
 						}
 
 						// Parse element bounding box
-						if elemBboxData, ok := elemData["bounding_box"].(map[string]interface{}); ok {
+						if elemBboxData, ok := elemData["bounding_box"].(map[string]any); ok {
 							elemBbox := &BoundingBox{}
 							if x, ok := elemBboxData["x"].(float64); ok {
 								elemBbox.X = x
@@ -387,7 +399,7 @@ func (t *DocumentProcessorTool) parseDiagrams(data []interface{}) []ExtractedDia
 			}
 
 			// Parse properties
-			if props, ok := diagramData["properties"].(map[string]interface{}); ok {
+			if props, ok := diagramData["properties"].(map[string]any); ok {
 				diagram.Properties = props
 			}
 
@@ -399,11 +411,11 @@ func (t *DocumentProcessorTool) parseDiagrams(data []interface{}) []ExtractedDia
 }
 
 // parseImages converts the Python images data to Go structs
-func (t *DocumentProcessorTool) parseImages(data []interface{}) []ExtractedImage {
+func (t *DocumentProcessorTool) parseImages(data []any) []ExtractedImage {
 	var images []ExtractedImage
 
 	for _, item := range data {
-		if imageData, ok := item.(map[string]interface{}); ok {
+		if imageData, ok := item.(map[string]any); ok {
 			image := ExtractedImage{}
 
 			if id, ok := imageData["id"].(string); ok {
@@ -438,7 +450,7 @@ func (t *DocumentProcessorTool) parseImages(data []interface{}) []ExtractedImage
 			}
 
 			// Parse bounding box
-			if bboxData, ok := imageData["bounding_box"].(map[string]interface{}); ok {
+			if bboxData, ok := imageData["bounding_box"].(map[string]any); ok {
 				bbox := &BoundingBox{}
 				if x, ok := bboxData["x"].(float64); ok {
 					bbox.X = x
@@ -456,7 +468,7 @@ func (t *DocumentProcessorTool) parseImages(data []interface{}) []ExtractedImage
 			}
 
 			// Parse extracted text
-			if extractedTextData, ok := imageData["extracted_text"].([]interface{}); ok {
+			if extractedTextData, ok := imageData["extracted_text"].([]any); ok {
 				for _, textItem := range extractedTextData {
 					if textStr, ok := textItem.(string); ok {
 						image.ExtractedText = append(image.ExtractedText, textStr)
@@ -529,12 +541,10 @@ func (t *DocumentProcessorTool) enhanceDiagramsWithLLM(diagrams []ExtractedDiagr
 
 		// Merge properties
 		if enhancedDiagrams[i].Properties == nil {
-			enhancedDiagrams[i].Properties = make(map[string]interface{})
+			enhancedDiagrams[i].Properties = make(map[string]any)
 		}
 		if analysis.Properties != nil {
-			for key, value := range analysis.Properties {
-				enhancedDiagrams[i].Properties[key] = value
-			}
+			maps.Copy(enhancedDiagrams[i].Properties, analysis.Properties)
 		}
 
 		// Add LLM processing metadata
@@ -669,6 +679,10 @@ func (t *DocumentProcessorTool) resolveSourcePath(source string) (string, error)
 
 	// Check if it's already an absolute path
 	if filepath.IsAbs(source) {
+		// Security: Check file access control
+		if err := security.CheckFileAccess(source); err != nil {
+			return "", err
+		}
 		// Verify the file exists
 		if _, err := os.Stat(source); err != nil {
 			return "", fmt.Errorf("file not found: %s", source)
@@ -684,6 +698,10 @@ func (t *DocumentProcessorTool) resolveSourcePath(source string) (string, error)
 
 	absolutePath := filepath.Join(cwd, source)
 
+	// Security: Check file access control for resolved path
+	if err := security.CheckFileAccess(absolutePath); err != nil {
+		return "", err
+	}
 	// Verify the file exists
 	if _, err := os.Stat(absolutePath); err != nil {
 		return "", fmt.Errorf("file not found: %s (resolved to %s)", source, absolutePath)

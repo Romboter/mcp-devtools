@@ -43,12 +43,12 @@ func decodeHTMLEntities(s string) string {
 	htmlTagRegex := regexp.MustCompile(`<[^>]*>`)
 	decoded = htmlTagRegex.ReplaceAllString(decoded, "")
 
-	// Clean up and normalize the text
-	return normalizeText(decoded)
+	// Clean up and Normalise the text
+	return NormaliseText(decoded)
 }
 
-// normalizeText removes problematic Unicode and normalizes whitespace
-func normalizeText(s string) string {
+// NormaliseText removes problematic Unicode and Normalises whitespace
+func NormaliseText(s string) string {
 	// Remove or replace problematic Unicode characters
 	var cleaned strings.Builder
 	for _, r := range s {
@@ -62,27 +62,27 @@ func normalizeText(s string) string {
 
 	result := cleaned.String()
 
-	// Normalize whitespace
+	// Normalise whitespace
 	result = regexp.MustCompile(`\s+`).ReplaceAllString(result, " ")
 	result = strings.TrimSpace(result)
 
 	return result
 }
 
-// BraveWebSearchResponse represents the response from Brave web search API
-type BraveWebSearchResponse struct {
-	Type  string                `json:"type"`
-	Query BraveQuery            `json:"query"`
-	Web   *BraveWebSearchResult `json:"web,omitempty"`
+// BraveInternetSearchResponse represents the response from Brave internet search API
+type BraveInternetSearchResponse struct {
+	Type  string                     `json:"type"`
+	Query BraveQuery                 `json:"query"`
+	Web   *BraveInternetSearchResult `json:"web,omitempty"`
 }
 
-// BraveWebSearchResult contains web search results
-type BraveWebSearchResult struct {
+// BraveInternetSearchResult contains internet search results
+type BraveInternetSearchResult struct {
 	Type    string           `json:"type"`
 	Results []BraveWebResult `json:"results"`
 }
 
-// BraveWebResult represents a single web search result
+// BraveWebResult represents a single internet search result
 type BraveWebResult struct {
 	Title       string `json:"title"`
 	URL         string `json:"url"`
@@ -145,17 +145,17 @@ type BraveVideoResult struct {
 
 // BraveVideoData contains video metadata
 type BraveVideoData struct {
-	Duration string      `json:"duration,omitempty"`
-	Views    interface{} `json:"views,omitempty"` // Can be string or number
-	Creator  string      `json:"creator,omitempty"`
+	Duration string `json:"duration,omitempty"`
+	Views    any    `json:"views,omitempty"` // Can be string or number
+	Creator  string `json:"creator,omitempty"`
 }
 
 // BraveLocalSearchResponse represents the response from Brave local search API
 type BraveLocalSearchResponse struct {
-	Type      string                `json:"type"`
-	Query     BraveQuery            `json:"query"`
-	Locations *BraveLocationResult  `json:"locations,omitempty"`
-	Web       *BraveWebSearchResult `json:"web,omitempty"`
+	Type      string                     `json:"type"`
+	Query     BraveQuery                 `json:"query"`
+	Locations *BraveLocationResult       `json:"locations,omitempty"`
+	Web       *BraveInternetSearchResult `json:"web,omitempty"`
 }
 
 // BraveLocationResult contains local search results
@@ -181,14 +181,14 @@ type BraveLocalPOIResponse struct {
 
 // BravePOIData contains point of interest data
 type BravePOIData struct {
-	ID          string                 `json:"id,omitempty"`
-	Name        string                 `json:"name"`
-	Address     string                 `json:"address,omitempty"`
-	PhoneNumber string                 `json:"phone_number,omitempty"`
-	Rating      float64                `json:"rating,omitempty"`
-	ReviewCount int                    `json:"review_count,omitempty"`
-	Hours       map[string]interface{} `json:"hours,omitempty"`
-	Website     string                 `json:"website,omitempty"`
+	ID          string         `json:"id,omitempty"`
+	Name        string         `json:"name"`
+	Address     string         `json:"address,omitempty"`
+	PhoneNumber string         `json:"phone_number,omitempty"`
+	Rating      float64        `json:"rating,omitempty"`
+	ReviewCount int            `json:"review_count,omitempty"`
+	Hours       map[string]any `json:"hours,omitempty"`
+	Website     string         `json:"website,omitempty"`
 }
 
 // BraveLocalDescriptionsResponse represents the response from local descriptions API

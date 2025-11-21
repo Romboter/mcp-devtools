@@ -2,9 +2,14 @@ package testutils
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"reflect"
 	"sync"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/sammcj/mcp-devtools/internal/tools/packageversions"
 	"github.com/sirupsen/logrus"
 )
 
@@ -53,18 +58,50 @@ func AssertErrorContains(t *testing.T, err error, expected string) {
 }
 
 // AssertNotNil fails the test if value is nil
-func AssertNotNil(t *testing.T, value interface{}) {
+func AssertNotNil(t *testing.T, value any) {
 	t.Helper()
 	if value == nil {
 		t.Fatal("Expected non-nil value")
 	}
 }
 
+// AssertNil asserts that a value is nil
+// AssertNil asserts that a value is nil
+// AssertNil asserts that a value is nil
+func AssertNil(t *testing.T, value any) {
+	t.Helper()
+	if value == nil {
+		return // Test passes
+	}
+	// Handle the case where value is a nil pointer wrapped in an interface
+	rv := reflect.ValueOf(value)
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return // Test passes
+	}
+	t.Fatalf("Expected nil value, got %v (type: %T)", value, value)
+}
+
 // AssertEqual fails the test if expected != actual
-func AssertEqual(t *testing.T, expected, actual interface{}) {
+func AssertEqual(t *testing.T, expected, actual any) {
 	t.Helper()
 	if expected != actual {
 		t.Fatalf("Expected %v, got %v", expected, actual)
+	}
+}
+
+// AssertTrue fails the test if condition is false
+func AssertTrue(t *testing.T, condition bool) {
+	t.Helper()
+	if !condition {
+		t.Fatal("Expected condition to be true")
+	}
+}
+
+// AssertFalse fails the test if condition is true
+func AssertFalse(t *testing.T, condition bool) {
+	t.Helper()
+	if condition {
+		t.Fatal("Expected condition to be false")
 	}
 }
 
@@ -83,4 +120,69 @@ func containsMiddle(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// ExtractPackageVersions extracts PackageVersion structs from a tool result
+func ExtractPackageVersions(t *testing.T, result any) []packageversions.PackageVersion {
+	t.Helper()
+
+	// Cast to CallToolResult
+	toolResult, ok := result.(*mcp.CallToolResult)
+	if !ok {
+		t.Fatalf("Expected *mcp.CallToolResult, got %T", result)
+	}
+
+	// Extract text content
+	if len(toolResult.Content) == 0 {
+		t.Fatal("Expected content in tool result")
+	}
+
+	textContent, ok := toolResult.Content[0].(mcp.TextContent)
+	if !ok {
+		t.Fatalf("Expected TextContent, got %T", toolResult.Content[0])
+	}
+
+	// Parse JSON
+	var versions []packageversions.PackageVersion
+	err := json.Unmarshal([]byte(textContent.Text), &versions)
+	if err != nil {
+		t.Fatalf("Failed to parse package versions JSON: %v", err)
+	}
+
+	return versions
+}
+
+// WithEnv sets an environment variable for the duration of a test and returns a cleanup function.
+// Usage:
+//
+//	cleanup := testutils.WithEnv(t, "ENABLE_ADDITIONAL_TOOLS", "tool-name")
+//	defer cleanup()
+func WithEnv(t *testing.T, key, value string) func() {
+	t.Helper()
+	original := os.Getenv(key)
+	_ = os.Setenv(key, value)
+
+	return func() {
+		if original == "" {
+			_ = os.Unsetenv(key)
+		} else {
+			_ = os.Setenv(key, original)
+		}
+	}
+}
+
+// WithEnvUnset unsets an environment variable for the duration of a test and returns a cleanup function.
+// Usage:
+//
+//	defer testutils.WithEnvUnset(t, "ENABLE_ADDITIONAL_TOOLS")()
+func WithEnvUnset(t *testing.T, key string) func() {
+	t.Helper()
+	original := os.Getenv(key)
+	_ = os.Unsetenv(key)
+
+	return func() {
+		if original != "" {
+			_ = os.Setenv(key, original)
+		}
+	}
 }

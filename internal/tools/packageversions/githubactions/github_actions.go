@@ -27,6 +27,7 @@ func (t *GitHubActionsTool) Definition() mcp.Tool {
 		mcp.WithArray("actions",
 			mcp.Description("Array of GitHub Actions to check"),
 			mcp.Required(),
+			mcp.WithStringItems(),
 		),
 		mcp.WithBoolean("includeDetails",
 			mcp.Description("Include additional details like published date and URL"),
@@ -36,11 +37,11 @@ func (t *GitHubActionsTool) Definition() mcp.Tool {
 }
 
 // Execute executes the tool's logic
-func (t *GitHubActionsTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *GitHubActionsTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Checking GitHub Actions versions")
 
 	// Parse actions
-	actionsRaw, ok := args["actions"].([]interface{})
+	actionsRaw, ok := args["actions"].([]any)
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter: actions")
 	}
@@ -54,7 +55,7 @@ func (t *GitHubActionsTool) Execute(ctx context.Context, logger *logrus.Logger, 
 	// Convert to GitHubAction
 	var actions []packageversions.GitHubAction
 	for _, actionRaw := range actionsRaw {
-		if actionMap, ok := actionRaw.(map[string]interface{}); ok {
+		if actionMap, ok := actionRaw.(map[string]any); ok {
 			var action packageversions.GitHubAction
 
 			// Parse owner
@@ -73,7 +74,7 @@ func (t *GitHubActionsTool) Execute(ctx context.Context, logger *logrus.Logger, 
 
 			// Parse current version
 			if currentVersion, ok := actionMap["currentVersion"].(string); ok && currentVersion != "" {
-				action.CurrentVersion = packageversions.StringPtr(currentVersion)
+				action.CurrentVersion = packageversions.StringPtrUnlessLatest(currentVersion)
 			}
 
 			actions = append(actions, action)
@@ -98,7 +99,7 @@ func (t *GitHubActionsTool) Execute(ctx context.Context, logger *logrus.Logger, 
 
 			// Parse current version
 			if len(parts) > 1 {
-				action.CurrentVersion = packageversions.StringPtr(parts[1])
+				action.CurrentVersion = packageversions.StringPtrUnlessLatest(parts[1])
 			}
 
 			actions = append(actions, action)
@@ -108,16 +109,13 @@ func (t *GitHubActionsTool) Execute(ctx context.Context, logger *logrus.Logger, 
 	}
 
 	// Get latest versions
-	results, err := t.getLatestVersions(logger, cache, actions, includeDetails)
-	if err != nil {
-		return nil, err
-	}
+	results := t.getLatestVersions(logger, cache, actions, includeDetails)
 
 	return packageversions.NewToolResultJSON(results)
 }
 
 // getLatestVersions gets the latest versions for GitHub Actions
-func (t *GitHubActionsTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, actions []packageversions.GitHubAction, includeDetails bool) ([]packageversions.GitHubActionVersion, error) {
+func (t *GitHubActionsTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, actions []packageversions.GitHubAction, includeDetails bool) []packageversions.GitHubActionVersion {
 	var results []packageversions.GitHubActionVersion
 
 	for _, action := range actions {
@@ -178,7 +176,7 @@ func (t *GitHubActionsTool) getLatestVersions(logger *logrus.Logger, cache *sync
 		return strings.ToLower(ownerRepoI) < strings.ToLower(ownerRepoJ)
 	})
 
-	return results, nil
+	return results
 }
 
 // getLatestVersion gets the latest version for a GitHub Action

@@ -166,18 +166,18 @@ type ExtractedTable struct {
 
 // ExtractedDiagram represents a diagram extracted from the document
 type ExtractedDiagram struct {
-	ID          string                 `json:"id"`                     // Unique diagram identifier
-	Type        string                 `json:"type"`                   // Type of diagram (flowchart, chart, diagram, etc.)
-	Caption     string                 `json:"caption,omitempty"`      // Diagram caption if available
-	Description string                 `json:"description,omitempty"`  // Generated description of the diagram
-	DiagramType string                 `json:"diagram_type,omitempty"` // Classified diagram type (flowchart, chart, etc.)
-	MermaidCode string                 `json:"mermaid_code,omitempty"` // Generated Mermaid syntax for the diagram
-	Base64Data  string                 `json:"base64_data,omitempty"`  // Base64-encoded image data for LLM vision processing
-	Elements    []DiagramElement       `json:"elements,omitempty"`     // Text elements within the diagram
-	PageNumber  int                    `json:"page_number,omitempty"`  // Page number where diagram appears
-	BoundingBox *BoundingBox           `json:"bounding_box,omitempty"` // Position on page
-	Confidence  float64                `json:"confidence,omitempty"`   // Confidence score for diagram analysis
-	Properties  map[string]interface{} `json:"properties,omitempty"`   // Additional diagram-specific properties
+	ID          string           `json:"id"`                     // Unique diagram identifier
+	Type        string           `json:"type"`                   // Type of diagram (flowchart, chart, diagram, etc.)
+	Caption     string           `json:"caption,omitempty"`      // Diagram caption if available
+	Description string           `json:"description,omitempty"`  // Generated description of the diagram
+	DiagramType string           `json:"diagram_type,omitempty"` // Classified diagram type (flowchart, chart, etc.)
+	MermaidCode string           `json:"mermaid_code,omitempty"` // Generated Mermaid syntax for the diagram
+	Base64Data  string           `json:"base64_data,omitempty"`  // Base64-encoded image data for LLM vision processing
+	Elements    []DiagramElement `json:"elements,omitempty"`     // Text elements within the diagram
+	PageNumber  int              `json:"page_number,omitempty"`  // Page number where diagram appears
+	BoundingBox *BoundingBox     `json:"bounding_box,omitempty"` // Position on page
+	Confidence  float64          `json:"confidence,omitempty"`   // Confidence score for diagram analysis
+	Properties  map[string]any   `json:"properties,omitempty"`   // Additional diagram-specific properties
 }
 
 // DiagramElement represents a text or structural element within a diagram
@@ -264,6 +264,7 @@ type SystemInfo struct {
 	CacheDirectory       string                 `json:"cache_directory,omitempty"`       // Cache directory path
 	CacheEnabled         bool                   `json:"cache_enabled"`                   // Whether caching is enabled
 	MaxFileSize          int                    `json:"max_file_size"`                   // Maximum file size in MB
+	MaxMemoryLimit       int64                  `json:"max_memory_limit"`                // Maximum memory limit in bytes
 	DefaultTimeout       int                    `json:"default_timeout"`                 // Default timeout in seconds
 }
 
