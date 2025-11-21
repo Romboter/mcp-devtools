@@ -10,19 +10,17 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/sammcj/mcp-devtools/internal/registry"
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/tools"
 	"github.com/sirupsen/logrus"
 )
 
 // FetchURLTool implements URL fetching with HTML-to-markdown conversion
-type FetchURLTool struct {
-	client *WebClient
-}
+type FetchURLTool struct{}
 
 // init registers the fetch-url tool
 func init() {
-	registry.Register(&FetchURLTool{
-		client: NewWebClient(),
-	})
+	registry.Register(&FetchURLTool{})
 }
 
 // Definition returns the tool's definition for MCP registration
@@ -56,11 +54,16 @@ This tool is useful for fetching web content - for example to get documentation,
 		mcp.WithBoolean("raw",
 			mcp.Description("Return raw HTML content without markdown conversion (default: false)"),
 		),
+		// Read-only annotations for web content fetching tool
+		mcp.WithReadOnlyHintAnnotation(true),     // Only fetches content, doesn't modify environment
+		mcp.WithDestructiveHintAnnotation(false), // No destructive operations
+		mcp.WithIdempotentHintAnnotation(true),   // Same URL returns same content
+		mcp.WithOpenWorldHintAnnotation(true),    // Fetches from external URLs
 	)
 }
 
 // Execute executes the fetch-url tool
-func (t *FetchURLTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *FetchURLTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Executing fetch-url tool")
 
 	// Parse and validate parameters
@@ -76,16 +79,32 @@ func (t *FetchURLTool) Execute(ctx context.Context, logger *logrus.Logger, cache
 		"raw":         request.Raw,
 	}).Debug("Fetch URL parameters")
 
-	// Fetch the content
-	response, err := t.client.FetchContent(ctx, logger, request.URL)
+	// Use security helper for safe HTTP GET
+	ops := security.NewOperations("webfetch")
+	safeResp, err := ops.SafeHTTPGet(request.URL)
 	if err != nil {
+		// Handle security errors properly
+		if secErr, ok := err.(*security.SecurityError); ok {
+			return nil, security.FormatSecurityBlockError(secErr)
+		}
 		// Return error information in a structured way
-		errorResponse := map[string]interface{}{
+		errorResponse := map[string]any{
 			"url":       request.URL,
 			"error":     err.Error(),
 			"timestamp": time.Now(),
 		}
 		return t.newToolResultJSON(errorResponse)
+	}
+
+	// Convert SafeHTTPResponse to FetchURLResponse format
+	response := &FetchURLResponse{
+		Content:     string(safeResp.Content),
+		ContentType: safeResp.ContentType,
+		StatusCode:  safeResp.StatusCode,
+		TotalLength: len(safeResp.Content),
+		TotalLines:  len(strings.Split(string(safeResp.Content), "\n")),
+		StartLine:   1,
+		EndLine:     len(strings.Split(string(safeResp.Content), "\n")),
 	}
 
 	// Process the content (convert HTML to markdown, handle different content types)
@@ -95,13 +114,62 @@ func (t *FetchURLTool) Execute(ctx context.Context, logger *logrus.Logger, cache
 		processedContent = response.Content
 	}
 
+	// Handle security warnings from the helper
+	var securityNotice string
+	if safeResp.SecurityResult != nil && safeResp.SecurityResult.Action == security.ActionWarn {
+		securityNotice = fmt.Sprintf("Security Warning [ID: %s]: %s Use security_override tool with ID %s if this is intentional.",
+			safeResp.SecurityResult.ID, safeResp.SecurityResult.Message, safeResp.SecurityResult.ID)
+	}
+
 	// Apply pagination
 	paginatedResponse := t.applyPagination(response, processedContent, request)
 
+	// Add security notice to response if needed
+	if securityNotice != "" {
+		// Convert response to map for adding security field
+		responseMap := map[string]any{
+			"content":         paginatedResponse.Content,
+			"truncated":       paginatedResponse.Truncated,
+			"start_index":     paginatedResponse.StartIndex,
+			"end_index":       paginatedResponse.EndIndex,
+			"total_length":    paginatedResponse.TotalLength,
+			"total_lines":     paginatedResponse.TotalLines,
+			"start_line":      paginatedResponse.StartLine,
+			"end_line":        paginatedResponse.EndLine,
+			"remaining_lines": paginatedResponse.RemainingLines,
+			"security_notice": securityNotice,
+		}
+
+		if paginatedResponse.NextChunkPreview != "" {
+			responseMap["next_chunk_preview"] = paginatedResponse.NextChunkPreview
+		}
+		if paginatedResponse.Message != "" {
+			responseMap["message"] = paginatedResponse.Message
+		}
+		if paginatedResponse.ContentType != "" {
+			responseMap["content_type"] = paginatedResponse.ContentType
+		}
+		if paginatedResponse.StatusCode != 200 {
+			responseMap["status_code"] = paginatedResponse.StatusCode
+		}
+
+		logger.WithFields(logrus.Fields{
+			"url":              request.URL,
+			"content_type":     safeResp.ContentType,
+			"status_code":      safeResp.StatusCode,
+			"total_length":     paginatedResponse.TotalLength,
+			"returned":         len(paginatedResponse.Content),
+			"truncated":        paginatedResponse.Truncated,
+			"security_warning": true,
+		}).Info("Fetch URL completed with security warning")
+
+		return t.newToolResultJSON(responseMap)
+	}
+
 	logger.WithFields(logrus.Fields{
 		"url":          request.URL,
-		"content_type": response.ContentType,
-		"status_code":  response.StatusCode,
+		"content_type": safeResp.ContentType,
+		"status_code":  safeResp.StatusCode,
 		"total_length": paginatedResponse.TotalLength,
 		"returned":     len(paginatedResponse.Content),
 		"truncated":    paginatedResponse.Truncated,
@@ -111,7 +179,7 @@ func (t *FetchURLTool) Execute(ctx context.Context, logger *logrus.Logger, cache
 }
 
 // parseRequest parses and validates the tool arguments
-func (t *FetchURLTool) parseRequest(args map[string]interface{}) (*FetchURLRequest, error) {
+func (t *FetchURLTool) parseRequest(args map[string]any) (*FetchURLRequest, error) {
 	// Parse URL (required)
 	url, ok := args["url"].(string)
 	if !ok || url == "" {
@@ -176,7 +244,6 @@ func (t *FetchURLTool) applyPagination(originalResponse *FetchURLResponse, proce
 	// Check if start_index is beyond content length
 	if request.StartIndex >= totalLength {
 		return &FetchURLResponse{
-			URL:            originalResponse.URL,
 			Content:        "",
 			Truncated:      false,
 			StartIndex:     request.StartIndex,
@@ -243,7 +310,6 @@ func (t *FetchURLTool) applyPagination(originalResponse *FetchURLResponse, proce
 
 	// Create enhanced response
 	response := &FetchURLResponse{
-		URL:              originalResponse.URL,
 		Content:          content,
 		Truncated:        truncated,
 		StartIndex:       request.StartIndex,
@@ -295,11 +361,97 @@ func max(a, b int) int {
 }
 
 // newToolResultJSON creates a new tool result with JSON content
-func (t *FetchURLTool) newToolResultJSON(data interface{}) (*mcp.CallToolResult, error) {
+func (t *FetchURLTool) newToolResultJSON(data any) (*mcp.CallToolResult, error) {
 	jsonBytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
 	return mcp.NewToolResultText(string(jsonBytes)), nil
+}
+
+// ProvideExtendedInfo provides detailed usage information for the fetch_url tool
+func (t *FetchURLTool) ProvideExtendedInfo() *tools.ExtendedHelp {
+	return &tools.ExtendedHelp{
+		Examples: []tools.ToolExample{
+			{
+				Description: "Fetch a webpage and convert to markdown",
+				Arguments: map[string]any{
+					"url": "https://docs.example.com/getting-started",
+				},
+				ExpectedResult: "Returns webpage content converted to clean markdown format, useful for analysis and processing",
+			},
+			{
+				Description: "Fetch raw HTML without markdown conversion",
+				Arguments: map[string]any{
+					"url": "https://api.example.com/status",
+					"raw": true,
+				},
+				ExpectedResult: "Returns raw HTML content without conversion, useful for parsing structured HTML or APIs returning HTML",
+			},
+			{
+				Description: "Fetch large content with pagination",
+				Arguments: map[string]any{
+					"url":        "https://longdocument.example.com/guide",
+					"max_length": 15000,
+				},
+				ExpectedResult: "Returns first 15,000 characters with pagination info including total length, line numbers, and next chunk preview",
+			},
+			{
+				Description: "Continue reading from a specific point",
+				Arguments: map[string]any{
+					"url":         "https://longdocument.example.com/guide",
+					"start_index": 15000,
+					"max_length":  10000,
+				},
+				ExpectedResult: "Returns content starting from character 15,000 for the next 10,000 characters, enabling sequential reading of long documents",
+			},
+			{
+				Description: "Fetch API documentation with custom length",
+				Arguments: map[string]any{
+					"url":        "https://api-docs.example.com/v2/reference",
+					"max_length": 25000,
+				},
+				ExpectedResult: "Returns API documentation content up to 25,000 characters, converted to markdown for easy reading and analysis",
+			},
+		},
+		CommonPatterns: []string{
+			"Start with default settings first to get a preview of content structure",
+			"For long documents: use pagination (start with default, then continue with start_index)",
+			"Use raw=true for HTML parsing or when markdown conversion breaks the structure",
+			"Increase max_length for comprehensive content, decrease for quick previews",
+			"Combine with internet search results to fetch full content from interesting URLs",
+			"Use with memory tool to store important content for later reference",
+		},
+		Troubleshooting: []tools.TroubleshootingTip{
+			{
+				Problem:  "SSL certificate errors or connection timeouts",
+				Solution: "The website may have security restrictions or be temporarily unavailable. Try again later or check if the URL is correct and publicly accessible.",
+			},
+			{
+				Problem:  "Content appears garbled or poorly formatted",
+				Solution: "Try setting 'raw: true' to get unprocessed content, or the website may use complex JavaScript rendering that requires a browser to display properly.",
+			},
+			{
+				Problem:  "Pagination returns empty content with start_index",
+				Solution: "The start_index may be beyond the content length. Check the total_length from a previous fetch and ensure start_index is less than that value.",
+			},
+			{
+				Problem:  "Authentication required or access denied errors",
+				Solution: "The content requires login or API keys. This tool only fetches publicly accessible content - private or authenticated content cannot be accessed.",
+			},
+			{
+				Problem:  "Content is truncated unexpectedly",
+				Solution: "The content hit the max_length limit. Use pagination with start_index to fetch more content, or increase max_length parameter (up to 1,000,000 characters).",
+			},
+		},
+		ParameterDetails: map[string]string{
+			"url":         "Must be a complete HTTP/HTTPS URL. Tool will attempt to add 'https://' if no protocol is specified. Does not support FTP, file://, or other protocols.",
+			"max_length":  "Controls how much content to return (1 to 1,000,000 characters). Default is 6,000. Use larger values for comprehensive content, smaller for previews.",
+			"start_index": "Character position to start reading from (0-based). Use for pagination when content is longer than max_length. Default is 0 (start of content).",
+			"raw":         "When true, returns raw HTML without markdown conversion. When false (default), converts HTML to clean markdown format for easier reading and analysis.",
+		},
+		WhenToUse:    "Use to fetch and process web content for analysis, extract information from documentation, get full text from search results, or read blog posts and articles. Ideal for content that needs to be analysed or processed by AI.",
+		WhenNotToUse: "Don't use for downloading files, accessing authenticated content, scraping data that requires JavaScript execution, or fetching binary content like images or PDFs.",
+	}
 }

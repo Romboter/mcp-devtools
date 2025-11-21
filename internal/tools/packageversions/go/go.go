@@ -35,14 +35,14 @@ func (t *GoTool) Definition() mcp.Tool {
 		mcp.WithDescription("Check latest stable versions for Go packages in go.mod"),
 		mcp.WithObject("dependencies",
 			mcp.Description("Dependencies from go.mod"),
-			mcp.Properties(map[string]interface{}{}),
+			mcp.Properties(map[string]any{}),
 			mcp.Required(),
 		),
 	)
 }
 
 // Execute executes the tool's logic
-func (t *GoTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *GoTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Getting latest Go package versions")
 
 	// Parse dependencies
@@ -52,7 +52,7 @@ func (t *GoTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync
 	}
 
 	// Convert to map[string]interface{}
-	depsMap, ok := depsRaw.(map[string]interface{})
+	depsMap, ok := depsRaw.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("invalid dependencies format: expected object")
 	}
@@ -60,11 +60,11 @@ func (t *GoTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync
 	var requires []packageversions.GoRequire
 
 	// Handle different input formats
-	if requireRaw, ok := depsMap["require"].([]interface{}); ok {
+	if requireRaw, ok := depsMap["require"].([]any); ok {
 		// Complex format: structured go.mod with require array
 		logger.Debug("Processing complex go.mod format with require array")
 		for _, req := range requireRaw {
-			if reqMap, ok := req.(map[string]interface{}); ok {
+			if reqMap, ok := req.(map[string]any); ok {
 				var require packageversions.GoRequire
 
 				// Parse path
@@ -103,16 +103,13 @@ func (t *GoTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync
 	}
 
 	// Get latest versions
-	results, err := t.getLatestVersions(logger, cache, requires)
-	if err != nil {
-		return nil, err
-	}
+	results := t.getLatestVersions(logger, cache, requires)
 
 	return packageversions.NewToolResultJSON(results)
 }
 
 // getLatestVersions gets the latest versions for Go packages
-func (t *GoTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, requires []packageversions.GoRequire) ([]packageversions.PackageVersion, error) {
+func (t *GoTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, requires []packageversions.GoRequire) []packageversions.PackageVersion {
 	var results []packageversions.PackageVersion
 
 	for _, require := range requires {
@@ -126,7 +123,7 @@ func (t *GoTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, requi
 		if cachedVersion, ok := cache.Load(cacheKey); ok {
 			logger.WithField("package", require.Path).Debug("Using cached Go package version")
 			result := cachedVersion.(packageversions.PackageVersion)
-			result.CurrentVersion = packageversions.StringPtr(require.Version)
+			result.CurrentVersion = packageversions.StringPtrUnlessLatest(require.Version)
 			results = append(results, result)
 			continue
 		}
@@ -140,7 +137,7 @@ func (t *GoTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, requi
 			}).Error("Failed to get Go package version")
 			results = append(results, packageversions.PackageVersion{
 				Name:           require.Path,
-				CurrentVersion: packageversions.StringPtr(require.Version),
+				CurrentVersion: packageversions.StringPtrUnlessLatest(require.Version),
 				LatestVersion:  "unknown",
 				Registry:       "go",
 				Skipped:        true,
@@ -152,7 +149,7 @@ func (t *GoTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, requi
 		// Create result
 		result := packageversions.PackageVersion{
 			Name:           require.Path,
-			CurrentVersion: packageversions.StringPtr(require.Version),
+			CurrentVersion: packageversions.StringPtrUnlessLatest(require.Version),
 			LatestVersion:  latestVersion,
 			Registry:       "go",
 		}
@@ -168,7 +165,7 @@ func (t *GoTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, requi
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
 
-	return results, nil
+	return results
 }
 
 // getLatestVersion gets the latest version for a Go package

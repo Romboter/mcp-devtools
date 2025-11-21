@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/tools/internetsearch"
 	"github.com/sirupsen/logrus"
 )
 
@@ -27,27 +29,33 @@ const (
 // BraveClient handles HTTP requests to the Brave Search API
 type BraveClient struct {
 	apiKey     string
-	httpClient *http.Client
+	httpClient internetsearch.HTTPClientInterface
 	baseURL    string
 }
 
-// NewBraveClient creates a new Brave API client
+// NewBraveClient creates a new Brave API client with rate limiting
 func NewBraveClient(apiKey string) *BraveClient {
 	return &BraveClient{
-		apiKey:  apiKey,
-		baseURL: BraveAPIBaseURL,
-		httpClient: &http.Client{
-			Timeout: DefaultTimeout,
-		},
+		apiKey:     apiKey,
+		baseURL:    BraveAPIBaseURL,
+		httpClient: internetsearch.NewRateLimitedHTTPClient(),
 	}
 }
 
-// makeRequest performs an HTTP request to the Brave API with retry logic
+// makeRequest performs an HTTP request to the Brave API with security checking
 func (c *BraveClient) makeRequest(ctx context.Context, logger *logrus.Logger, endpoint string, params map[string]string) ([]byte, error) {
 	// Build URL with parameters
 	reqURL, err := url.Parse(c.baseURL + endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	// Check domain access security for API endpoint using security helper
+	if err := security.CheckDomainAccess(reqURL.Host); err != nil {
+		if secErr, ok := err.(*security.SecurityError); ok {
+			return nil, security.FormatSecurityBlockError(secErr)
+		}
+		return nil, err
 	}
 
 	// Add query parameters
@@ -66,7 +74,7 @@ func (c *BraveClient) makeRequest(ctx context.Context, logger *logrus.Logger, en
 	maxRetries := 3
 	baseDelay := 100 * time.Millisecond
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	for attempt := range maxRetries {
 		// Check context cancellation before each attempt
 		select {
 		case <-ctx.Done():
@@ -119,15 +127,15 @@ func (c *BraveClient) makeRequest(ctx context.Context, logger *logrus.Logger, en
 			return nil, fmt.Errorf("failed to make request after %d attempts: %w", maxRetries, err)
 		}
 
-		// Process successful response
-		return c.processResponse(ctx, logger, resp, attempt+1)
+		// Process successful response with security analysis
+		return c.processResponseWithSecurity(logger, resp, reqURL.String())
 	}
 
 	return nil, fmt.Errorf("unexpected end of retry loop")
 }
 
-// processResponse handles the HTTP response processing with proper resource cleanup
-func (c *BraveClient) processResponse(ctx context.Context, logger *logrus.Logger, resp *http.Response, attempt int) ([]byte, error) {
+// processResponseWithSecurity handles the HTTP response processing with security analysis
+func (c *BraveClient) processResponseWithSecurity(logger *logrus.Logger, resp *http.Response, requestURL string) ([]byte, error) {
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			logger.WithError(closeErr).Warn("Failed to close response body")
@@ -153,6 +161,26 @@ func (c *BraveClient) processResponse(ctx context.Context, logger *logrus.Logger
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Security analysis on content
+	if security.IsEnabled() {
+		parsedURL, _ := url.Parse(requestURL)
+		sourceCtx := security.SourceContext{
+			URL:         requestURL,
+			Domain:      parsedURL.Hostname(),
+			ContentType: resp.Header.Get("Content-Type"),
+			Tool:        "internetsearch",
+		}
+
+		if secResult, err := security.AnalyseContent(string(body), sourceCtx); err == nil {
+			switch secResult.Action {
+			case security.ActionBlock:
+				return nil, security.FormatSecurityBlockErrorFromResult(secResult)
+			case security.ActionWarn:
+				logger.WithField("security_id", secResult.ID).Warn(secResult.Message)
+			}
+		}
 	}
 
 	// Check for HTTP errors
@@ -192,8 +220,8 @@ func (c *BraveClient) processResponse(ctx context.Context, logger *logrus.Logger
 	return body, nil
 }
 
-// WebSearch performs a web search using the Brave API
-func (c *BraveClient) WebSearch(ctx context.Context, logger *logrus.Logger, query string, count int, offset int, freshness string) (*BraveWebSearchResponse, error) {
+// InternetSearch performs an internet search using the Brave API
+func (c *BraveClient) InternetSearch(ctx context.Context, logger *logrus.Logger, query string, count int, offset int, freshness string) (*BraveInternetSearchResponse, error) {
 	params := map[string]string{
 		"q":      query,
 		"count":  fmt.Sprintf("%d", count),
@@ -209,9 +237,9 @@ func (c *BraveClient) WebSearch(ctx context.Context, logger *logrus.Logger, quer
 		return nil, err
 	}
 
-	var response BraveWebSearchResponse
+	var response BraveInternetSearchResponse
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse web search response: %w", err)
+		return nil, fmt.Errorf("failed to parse internet search response: %w", err)
 	}
 
 	return &response, nil

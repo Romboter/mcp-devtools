@@ -9,6 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/sammcj/mcp-devtools/internal/registry"
+	"github.com/sammcj/mcp-devtools/internal/tools"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,9 +25,11 @@ func init() {
 
 // Definition returns the tool's definition for MCP registration
 func (m *MemoryTool) Definition() mcp.Tool {
-	return mcp.NewTool(
+	tool := mcp.NewTool(
 		"memory",
-		mcp.WithDescription(`Persistent knowledge graph memory system for AI agents. Stores entities, relations, and observations across sessions.
+		mcp.WithDescription(`Persistent knowledge graph memory system. Stores entities, relations, and observations across sessions.
+
+This can be useful if the user asks you to store or retrieve something specific in your memory.
 
 - **Entities** MUST be created before relations can reference them
 - **Destructive operations** (delete_*) permanently remove data - use carefully!
@@ -38,7 +41,7 @@ func (m *MemoryTool) Definition() mcp.Tool {
 		// Subcommand parameter to specify the operation
 		mcp.WithString("operation",
 			mcp.Required(),
-			mcp.Description("Memory operation to perform"),
+			mcp.Description("Operation to perform"),
 			mcp.Enum(
 				"create_entities",
 				"create_relations",
@@ -62,11 +65,18 @@ func (m *MemoryTool) Definition() mcp.Tool {
 			mcp.Description("Memory namespace for organising memories into separate projects/contexts (default: 'default')"),
 			mcp.DefaultString("default"),
 		),
+
+		// Non-destructive writing annotations (note: has some destructive operations)
+		mcp.WithReadOnlyHintAnnotation(false),   // Stores and modifies memory data
+		mcp.WithDestructiveHintAnnotation(true), // Has delete operations
+		mcp.WithIdempotentHintAnnotation(false), // Not idempotent: destructive and duplicative operations
+		mcp.WithOpenWorldHintAnnotation(false),  // Works with local memory storage
 	)
+	return tool
 }
 
 // Execute executes the memory tool operations
-func (m *MemoryTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	// Parse namespace parameter (default: "default")
 	namespace := "default"
 	if namespaceRaw, exists := args["namespace"]; exists && namespaceRaw != nil {
@@ -96,9 +106,9 @@ func (m *MemoryTool) Execute(ctx context.Context, logger *logrus.Logger, cache *
 	}
 
 	// Parse data parameter (optional for some operations)
-	var data map[string]interface{}
+	var data map[string]any
 	if dataRaw, exists := args["data"]; exists && dataRaw != nil {
-		if dataMap, ok := dataRaw.(map[string]interface{}); ok {
+		if dataMap, ok := dataRaw.(map[string]any); ok {
 			data = dataMap
 		} else {
 			return nil, fmt.Errorf("data parameter must be an object")
@@ -131,7 +141,7 @@ func (m *MemoryTool) Execute(ctx context.Context, logger *logrus.Logger, cache *
 }
 
 // handleCreateEntities handles entity creation
-func (m *MemoryTool) handleCreateEntities(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleCreateEntities(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for create_entities operation")
 	}
@@ -166,7 +176,7 @@ func (m *MemoryTool) handleCreateEntities(data map[string]interface{}) (*mcp.Cal
 }
 
 // handleCreateRelations handles relation creation
-func (m *MemoryTool) handleCreateRelations(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleCreateRelations(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for create_relations operation")
 	}
@@ -201,7 +211,7 @@ func (m *MemoryTool) handleCreateRelations(data map[string]interface{}) (*mcp.Ca
 }
 
 // handleAddObservations handles adding observations
-func (m *MemoryTool) handleAddObservations(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleAddObservations(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for add_observations operation")
 	}
@@ -236,7 +246,7 @@ func (m *MemoryTool) handleAddObservations(data map[string]interface{}) (*mcp.Ca
 }
 
 // handleDeleteEntities handles entity deletion
-func (m *MemoryTool) handleDeleteEntities(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleDeleteEntities(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for delete_entities operation")
 	}
@@ -270,7 +280,7 @@ func (m *MemoryTool) handleDeleteEntities(data map[string]interface{}) (*mcp.Cal
 }
 
 // handleDeleteObservations handles observation deletion
-func (m *MemoryTool) handleDeleteObservations(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleDeleteObservations(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for delete_observations operation")
 	}
@@ -304,7 +314,7 @@ func (m *MemoryTool) handleDeleteObservations(data map[string]interface{}) (*mcp
 }
 
 // handleDeleteRelations handles relation deletion
-func (m *MemoryTool) handleDeleteRelations(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleDeleteRelations(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for delete_relations operation")
 	}
@@ -348,7 +358,7 @@ func (m *MemoryTool) handleReadGraph() (*mcp.CallToolResult, error) {
 }
 
 // handleSearchNodes handles node searching
-func (m *MemoryTool) handleSearchNodes(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleSearchNodes(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for search_nodes operation")
 	}
@@ -380,7 +390,7 @@ func (m *MemoryTool) handleSearchNodes(data map[string]interface{}) (*mcp.CallTo
 }
 
 // handleOpenNodes handles opening specific nodes
-func (m *MemoryTool) handleOpenNodes(data map[string]interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) handleOpenNodes(data map[string]any) (*mcp.CallToolResult, error) {
 	if data == nil {
 		return nil, fmt.Errorf("data parameter is required for open_nodes operation")
 	}
@@ -410,11 +420,116 @@ func (m *MemoryTool) handleOpenNodes(data map[string]interface{}) (*mcp.CallTool
 }
 
 // newToolResultJSON creates a new tool result with JSON content
-func (m *MemoryTool) newToolResultJSON(data interface{}) (*mcp.CallToolResult, error) {
+func (m *MemoryTool) newToolResultJSON(data any) (*mcp.CallToolResult, error) {
 	jsonData, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal response: %w", err)
 	}
 
 	return mcp.NewToolResultText(string(jsonData)), nil
+}
+
+// ProvideExtendedInfo provides detailed usage information for the memory tool
+func (m *MemoryTool) ProvideExtendedInfo() *tools.ExtendedHelp {
+	return &tools.ExtendedHelp{
+		Examples: []tools.ToolExample{
+			{
+				Description: "Create entities for a project team",
+				Arguments: map[string]any{
+					"operation": "create_entities",
+					"namespace": "project_alpha",
+					"data": map[string]any{
+						"entities": []map[string]any{
+							{"name": "alice", "entityType": "person", "observations": []string{"Senior Developer", "Team Lead"}},
+							{"name": "backend_api", "entityType": "system", "observations": []string{"REST API", "Handles authentication"}},
+						},
+					},
+				},
+				ExpectedResult: "Creates two entities (alice and backend_api) in the project_alpha namespace with their observations",
+			},
+			{
+				Description: "Create relationships between entities",
+				Arguments: map[string]any{
+					"operation": "create_relations",
+					"namespace": "project_alpha",
+					"data": map[string]any{
+						"relations": []map[string]any{
+							{"from": "alice", "to": "backend_api", "relationType": "maintains"},
+						},
+					},
+				},
+				ExpectedResult: "Creates a relationship showing that alice maintains the backend_api system",
+			},
+			{
+				Description: "Search for entities containing specific terms",
+				Arguments: map[string]any{
+					"operation": "search_nodes",
+					"namespace": "project_alpha",
+					"data": map[string]any{
+						"query": "API",
+					},
+				},
+				ExpectedResult: "Returns entities and observations containing 'API' with full graph context",
+			},
+			{
+				Description: "Read the complete memory graph",
+				Arguments: map[string]any{
+					"operation": "read_graph",
+					"namespace": "project_alpha",
+				},
+				ExpectedResult: "Returns the complete knowledge graph including all entities, relations, and observations for the namespace",
+			},
+			{
+				Description: "Add observations to existing entities",
+				Arguments: map[string]any{
+					"operation": "add_observations",
+					"namespace": "project_alpha",
+					"data": map[string]any{
+						"observations": []map[string]any{
+							{"entityName": "alice", "contents": []string{"Proficient in Go", "Mentor for junior developers"}},
+							{"entityName": "backend_api", "contents": []string{"Uses PostgreSQL", "Deployed on AWS"}},
+						},
+					},
+				},
+				ExpectedResult: "Adds new observations to alice and backend_api entities without affecting existing data",
+			},
+		},
+		CommonPatterns: []string{
+			"Always create entities before creating relations that reference them",
+			"Use meaningful entity names without spaces (e.g., 'user_service' not 'User Service')",
+			"Keep observations atomic - one fact per observation for better searchability",
+			"Use namespaces to separate different projects or contexts",
+			"Use search_nodes to find information before creating duplicate entities",
+			"Use read_graph periodically to understand the current state of your knowledge base",
+		},
+		Troubleshooting: []tools.TroubleshootingTip{
+			{
+				Problem:  "Cannot create relation: entity does not exist",
+				Solution: "Ensure both 'from' and 'to' entities exist by creating them first with create_entities operation. Relations require existing entities as endpoints.",
+			},
+			{
+				Problem:  "Empty or unexpected search results",
+				Solution: "Search is case-sensitive and searches entity names and observations. Try broader terms or use read_graph to see all available entities first.",
+			},
+			{
+				Problem:  "Data parameter structure errors",
+				Solution: "Each operation requires specific data structure. Check examples for correct format: create_entities needs 'entities' array, create_relations needs 'relations' array, etc.",
+			},
+			{
+				Problem:  "Namespace confusion or missing data",
+				Solution: "Data is isolated by namespace. Ensure you're using the correct namespace parameter. Default namespace is 'default' if not specified.",
+			},
+			{
+				Problem:  "Accidental data deletion",
+				Solution: "Delete operations are permanent. Use search_nodes or read_graph to verify what exists before deleting. Consider using different namespaces for testing.",
+			},
+		},
+		ParameterDetails: map[string]string{
+			"operation": "Specifies the memory operation to perform. Create operations add data, delete operations permanently remove data, read/search operations retrieve data without modification.",
+			"namespace": "Isolates memory data into separate contexts. Use different namespaces for different projects or use cases. Default is 'default'. Namespace affects all operations.",
+			"data":      "Operation-specific structured data. Format varies significantly by operation - see examples for correct structure for each operation type.",
+		},
+		WhenToUse:    "Use for persistent knowledge management across sessions, building project memory, storing entity relationships, tracking facts and observations, or creating searchable knowledge bases for complex workflows.",
+		WhenNotToUse: "Don't use for temporary data that doesn't need persistence, large file storage, real-time data that changes frequently, or simple key-value storage needs (use regular variables instead).",
+	}
 }

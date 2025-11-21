@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "dev-tools": {
+      "timeout": 300,
+      "type": "stdio",
+      "command": "go",
+      "args": [
+        "run",
+        "github.com/sammcj/mcp-devtools@HEAD"
+      ],
+      "env": {
+        "NOTE": "The below environment variables are completely optional",
+        "ENABLE_ADDITIONAL_TOOLS": "security,sequential_thinking,shadcn",
+        "DISABLED_TOOLS": ""
+      }
+    }
+  }
+}

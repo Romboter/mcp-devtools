@@ -26,16 +26,17 @@ func (t *MavenTool) Definition() mcp.Tool {
 		mcp.WithArray("dependencies",
 			mcp.Description("Array of Maven dependencies"),
 			mcp.Required(),
+			mcp.Items(map[string]any{"type": "object"}),
 		),
 	)
 }
 
 // Execute executes the tool's logic
-func (t *MavenTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *MavenTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Getting latest Maven package versions")
 
 	// Parse dependencies
-	depsRaw, ok := args["dependencies"].([]interface{})
+	depsRaw, ok := args["dependencies"].([]any)
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter: dependencies")
 	}
@@ -43,7 +44,7 @@ func (t *MavenTool) Execute(ctx context.Context, logger *logrus.Logger, cache *s
 	// Convert to MavenDependency
 	var dependencies []packageversions.MavenDependency
 	for _, depRaw := range depsRaw {
-		if depMap, ok := depRaw.(map[string]interface{}); ok {
+		if depMap, ok := depRaw.(map[string]any); ok {
 			var dep packageversions.MavenDependency
 
 			// Parse groupId
@@ -75,16 +76,12 @@ func (t *MavenTool) Execute(ctx context.Context, logger *logrus.Logger, cache *s
 	}
 
 	// Get latest versions
-	results, err := t.getLatestVersions(logger, cache, dependencies)
-	if err != nil {
-		return nil, err
-	}
-
+	results := t.getLatestVersions(logger, cache, dependencies)
 	return packageversions.NewToolResultJSON(results)
 }
 
 // getLatestVersions gets the latest versions for Maven packages
-func (t *MavenTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, dependencies []packageversions.MavenDependency) ([]packageversions.PackageVersion, error) {
+func (t *MavenTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, dependencies []packageversions.MavenDependency) []packageversions.PackageVersion {
 	var results []packageversions.PackageVersion
 
 	for _, dep := range dependencies {
@@ -101,7 +98,7 @@ func (t *MavenTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 		if cachedVersion, ok := cache.Load(cacheKey); ok {
 			logger.WithField("package", packageName).Debug("Using cached Maven package version")
 			result := cachedVersion.(packageversions.PackageVersion)
-			result.CurrentVersion = packageversions.StringPtr(dep.Version)
+			result.CurrentVersion = packageversions.StringPtrUnlessLatest(dep.Version)
 			results = append(results, result)
 			continue
 		}
@@ -115,7 +112,7 @@ func (t *MavenTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 			}).Error("Failed to get Maven package version")
 			results = append(results, packageversions.PackageVersion{
 				Name:           packageName,
-				CurrentVersion: packageversions.StringPtr(dep.Version),
+				CurrentVersion: packageversions.StringPtrUnlessLatest(dep.Version),
 				LatestVersion:  "unknown",
 				Registry:       "maven",
 				Skipped:        true,
@@ -127,7 +124,7 @@ func (t *MavenTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 		// Create result
 		result := packageversions.PackageVersion{
 			Name:           packageName,
-			CurrentVersion: packageversions.StringPtr(dep.Version),
+			CurrentVersion: packageversions.StringPtrUnlessLatest(dep.Version),
 			LatestVersion:  latestVersion,
 			Registry:       "maven",
 		}
@@ -143,7 +140,7 @@ func (t *MavenTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, de
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
 
-	return results, nil
+	return results
 }
 
 // getLatestVersion gets the latest version for a Maven package

@@ -17,6 +17,11 @@ import (
 )
 
 func TestMermaidGeneration(t *testing.T) {
+	// Skip this test unless explicitly requested via TEST_VLM_INTEGRATION
+	if os.Getenv("TEST_VLM_INTEGRATION") == "" {
+		t.Skip("Skipping Mermaid generation test: Set TEST_VLM_INTEGRATION=1 to run external VLM tests")
+	}
+
 	// Load .env file if it exists
 	loadDotEnv()
 
@@ -61,13 +66,27 @@ func TestMermaidGeneration(t *testing.T) {
 			t.Fatal("process_document tool not found in registry")
 		}
 
-		// Test with a document that should contain diagrams
-		testPDFPath := "/Users/samm/Downloads/ocrtest/my-pdf.pdf"
-		if _, err := os.Stat(testPDFPath); os.IsNotExist(err) {
-			t.Skip("Test PDF not available - skipping VLM processing test")
+		// Look for test PDFs in the tests/docprocessing directory
+		testPDFPaths := []string{
+			"tests/docprocessing/test-complex-pdf.pdf",
+			"tests/docprocessing/test-tables-charts.pdf",
 		}
 
-		args := map[string]interface{}{
+		var testPDFPath string
+		for _, path := range testPDFPaths {
+			if _, err := os.Stat(path); err == nil {
+				testPDFPath = path
+				break
+			}
+		}
+
+		if testPDFPath == "" {
+			t.Skip("No test PDF available - skipping VLM processing test")
+		}
+
+		t.Logf("Using test PDF: %s", testPDFPath)
+
+		args := map[string]any{
 			"source":                      testPDFPath,
 			"profile":                     "llm-external",
 			"inline":                      true,
@@ -94,7 +113,7 @@ func TestMermaidGeneration(t *testing.T) {
 			t.Fatal("Expected TextContent, got different type")
 		}
 
-		var response map[string]interface{}
+		var response map[string]any
 		if err := json.Unmarshal([]byte(textContent.Text), &response); err != nil {
 			t.Fatalf("Failed to parse response JSON: %v", err)
 		}
@@ -109,7 +128,7 @@ func TestMermaidGeneration(t *testing.T) {
 		}
 
 		// Check processing method
-		if processingInfo, ok := response["processing_info"].(map[string]interface{}); ok {
+		if processingInfo, ok := response["processing_info"].(map[string]any); ok {
 			if method, ok := processingInfo["processing_method"].(string); ok {
 				t.Logf("Processing method: %s", method)
 
@@ -121,11 +140,11 @@ func TestMermaidGeneration(t *testing.T) {
 		}
 
 		// Check for diagrams in the response
-		if diagrams, ok := response["diagrams"].([]interface{}); ok {
+		if diagrams, ok := response["diagrams"].([]any); ok {
 			t.Logf("Found %d diagrams in response", len(diagrams))
 
 			for i, diagramInterface := range diagrams {
-				if diagram, ok := diagramInterface.(map[string]interface{}); ok {
+				if diagram, ok := diagramInterface.(map[string]any); ok {
 					t.Logf("Diagram %d:", i+1)
 					if id, ok := diagram["id"].(string); ok {
 						t.Logf("  ID: %s", id)
@@ -245,7 +264,7 @@ func isVLMConfigured() bool {
 	return apiURL != "" && model != "" && apiKey != ""
 }
 
-func getMapKeys(m map[string]interface{}) []string {
+func getMapKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

@@ -3,6 +3,7 @@ package duckduckgo
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -10,22 +11,21 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/sammcj/mcp-devtools/internal/security"
 	"github.com/sammcj/mcp-devtools/internal/tools/internetsearch"
 	"github.com/sirupsen/logrus"
 )
 
 // DuckDuckGoProvider implements the unified SearchProvider interface
 type DuckDuckGoProvider struct {
-	client *http.Client
+	client internetsearch.HTTPClientInterface
 }
 
-// NewDuckDuckGoProvider creates a new DuckDuckGo search provider
+// NewDuckDuckGoProvider creates a new DuckDuckGo search provider with rate limiting
 // DuckDuckGo doesn't require an API key, so it's always available
 func NewDuckDuckGoProvider() *DuckDuckGoProvider {
 	return &DuckDuckGoProvider{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		client: internetsearch.NewRateLimitedHTTPClient(),
 	}
 }
 
@@ -42,13 +42,13 @@ func (p *DuckDuckGoProvider) IsAvailable() bool {
 
 // GetSupportedTypes returns the search types this provider supports
 func (p *DuckDuckGoProvider) GetSupportedTypes() []string {
-	// DuckDuckGo HTML interface primarily supports web search
-	// We'll map all types to web search for simplicity
+	// DuckDuckGo HTML interface primarily supports internet search
+	// We'll map all types to internet search for simplicity
 	return []string{"web"}
 }
 
 // Search executes a search using the DuckDuckGo provider
-func (p *DuckDuckGoProvider) Search(ctx context.Context, logger *logrus.Logger, searchType string, args map[string]interface{}) (*internetsearch.SearchResponse, error) {
+func (p *DuckDuckGoProvider) Search(ctx context.Context, logger *logrus.Logger, searchType string, args map[string]any) (*internetsearch.SearchResponse, error) {
 	query := args["query"].(string)
 
 	logger.WithFields(logrus.Fields{
@@ -57,12 +57,12 @@ func (p *DuckDuckGoProvider) Search(ctx context.Context, logger *logrus.Logger, 
 		"query":    query,
 	}).Debug("DuckDuckGo search parameters")
 
-	// For DuckDuckGo, all search types are handled as web search
-	return p.executeWebSearch(ctx, logger, args)
+	// For DuckDuckGo, all search types are handled as internet search
+	return p.executeInternetSearch(ctx, logger, args)
 }
 
-// executeWebSearch handles web search execution
-func (p *DuckDuckGoProvider) executeWebSearch(ctx context.Context, logger *logrus.Logger, args map[string]interface{}) (*internetsearch.SearchResponse, error) {
+// executeInternetSearch handles internet search execution
+func (p *DuckDuckGoProvider) executeInternetSearch(ctx context.Context, logger *logrus.Logger, args map[string]any) (*internetsearch.SearchResponse, error) {
 	query := args["query"].(string)
 
 	// Parse optional parameters
@@ -74,39 +74,79 @@ func (p *DuckDuckGoProvider) executeWebSearch(ctx context.Context, logger *logru
 		}
 	}
 
+	// Security check: verify domain access before making request
+	if err := security.CheckDomainAccess("html.duckduckgo.com"); err != nil {
+		return nil, err
+	}
+
 	// Create form data for POST request
 	formData := url.Values{}
 	formData.Set("q", query)
 	formData.Set("b", "")
 	formData.Set("kl", "")
 
-	// Create POST request to DuckDuckGo HTML interface
+	// Create POST request with proper headers
 	req, err := http.NewRequestWithContext(ctx, "POST", "https://html.duckduckgo.com/html", strings.NewReader(formData.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Set headers to mimic a real browser
+	// Set headers to appear more like a browser
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; MCP-DevTools/1.0)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-GB,en;q=0.9")
 
-	// Execute request
+	// Execute request with rate limiting
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("search request failed: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			logger.WithError(err).Warn("Failed to close response body")
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.WithError(closeErr).Warn("Failed to close response body")
 		}
 	}()
 
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check for rate limiting (202 is DuckDuckGo's rate limit response)
+	if resp.StatusCode == http.StatusAccepted {
+		return nil, fmt.Errorf("rate limit exceeded: DuckDuckGo, please wait before retrying")
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DuckDuckGo search error: %d %s", resp.StatusCode, resp.Status)
+		return nil, fmt.Errorf("DuckDuckGo search error: status %d", resp.StatusCode)
+	}
+
+	// Security analysis: check response content for threats
+	if security.IsEnabled() {
+		source := security.SourceContext{
+			Tool:        "internet_search",
+			Domain:      "html.duckduckgo.com",
+			ContentType: "text/html",
+			URL:         "https://html.duckduckgo.com/html",
+		}
+		if secResult, err := security.AnalyseContent(string(body), source); err == nil {
+			switch secResult.Action {
+			case security.ActionBlock:
+				return nil, security.FormatSecurityBlockError(&security.SecurityError{
+					ID:      secResult.ID,
+					Message: secResult.Message,
+					Action:  security.ActionBlock,
+				})
+			case security.ActionWarn:
+				logger.Warnf("Security warning [ID: %s]: %s", secResult.ID, secResult.Message)
+			}
+		}
 	}
 
 	// Parse HTML response using goquery
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse HTML response: %w", err)
 	}
@@ -153,7 +193,7 @@ func (p *DuckDuckGoProvider) executeWebSearch(ctx context.Context, logger *logru
 			snippet = strings.TrimSpace(snippetElem.Text())
 		}
 
-		metadata := make(map[string]interface{})
+		metadata := make(map[string]any)
 		metadata["provider"] = "duckduckgo"
 		metadata["position"] = len(results) + 1
 
@@ -161,16 +201,15 @@ func (p *DuckDuckGoProvider) executeWebSearch(ctx context.Context, logger *logru
 			Title:       p.cleanText(title),
 			URL:         link,
 			Description: p.cleanText(snippet),
-			Type:        "web",
 			Metadata:    metadata,
 		})
 	})
 
 	if len(results) == 0 {
-		return p.createEmptyResponse(query)
+		return p.createEmptyResponse(), nil
 	}
 
-	return p.createSuccessResponse(query, results, logger)
+	return p.createSuccessResponse(query, results, logger), nil
 }
 
 // cleanText removes extra whitespace and cleans up text
@@ -182,24 +221,19 @@ func (p *DuckDuckGoProvider) cleanText(text string) string {
 }
 
 // Helper functions
-func (p *DuckDuckGoProvider) createEmptyResponse(query string) (*internetsearch.SearchResponse, error) {
-	result := &internetsearch.SearchResponse{
-		Query:       query,
-		ResultCount: 0,
-		Results:     []internetsearch.SearchResult{},
-		Provider:    "duckduckgo",
-		Timestamp:   time.Now(),
+func (p *DuckDuckGoProvider) createEmptyResponse() *internetsearch.SearchResponse {
+	return &internetsearch.SearchResponse{
+		Results:   []internetsearch.SearchResult{},
+		Provider:  "duckduckgo",
+		Timestamp: time.Now(),
 	}
-	return result, nil
 }
 
-func (p *DuckDuckGoProvider) createSuccessResponse(query string, results []internetsearch.SearchResult, logger *logrus.Logger) (*internetsearch.SearchResponse, error) {
+func (p *DuckDuckGoProvider) createSuccessResponse(query string, results []internetsearch.SearchResult, logger *logrus.Logger) *internetsearch.SearchResponse {
 	result := &internetsearch.SearchResponse{
-		Query:       query,
-		ResultCount: len(results),
-		Results:     results,
-		Provider:    "duckduckgo",
-		Timestamp:   time.Now(),
+		Results:   results,
+		Provider:  "duckduckgo",
+		Timestamp: time.Now(),
 	}
 
 	logger.WithFields(logrus.Fields{
@@ -208,5 +242,5 @@ func (p *DuckDuckGoProvider) createSuccessResponse(query string, results []inter
 		"provider":     "duckduckgo",
 	}).Info("DuckDuckGo search completed successfully")
 
-	return result, nil
+	return result
 }

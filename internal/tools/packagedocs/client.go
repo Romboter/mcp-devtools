@@ -7,39 +7,102 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/utils/httpclient"
 	"github.com/sirupsen/logrus"
 )
 
 const (
 	context7BaseURL      = "https://context7.com/api"
 	defaultMinimumTokens = 10000
-	cacheExpiry          = 30 * time.Minute
+	cacheExpiry          = 120 * time.Minute
+
+	// DefaultPackageDocsRateLimit is the default maximum requests per second for package docs
+	DefaultPackageDocsRateLimit = 10
+	// PackageDocsRateLimitEnvVar is the environment variable for configuring rate limit
+	PackageDocsRateLimitEnvVar = "PACKAGE_DOCS_RATE_LIMIT"
+	// Context7APIKeyEnvVar is the environment variable for the Context7 API key
+	Context7APIKeyEnvVar = "CONTEXT7_API_KEY"
+	// Context7SourceIdentifier is the source identifier sent in API requests
+	Context7SourceIdentifier = "mcp-devtools"
 )
+
+// RateLimitedHTTPClient implements a rate-limited HTTP client
+type RateLimitedHTTPClient struct {
+	client  *http.Client
+	limiter *rate.Limiter
+	mu      sync.Mutex
+}
+
+// Do implements the HTTP client interface with rate limiting
+func (c *RateLimitedHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Wait for rate limiter to allow the request
+	err := c.limiter.Wait(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	return c.client.Do(req)
+}
+
+// getPackageDocsRateLimit returns the configured rate limit for package docs requests
+func getPackageDocsRateLimit() float64 {
+	if envValue := os.Getenv(PackageDocsRateLimitEnvVar); envValue != "" {
+		if value, err := strconv.ParseFloat(envValue, 64); err == nil && value > 0 {
+			return value
+		}
+	}
+	return DefaultPackageDocsRateLimit
+}
+
+// newRateLimitedHTTPClient creates a new rate-limited HTTP client with proxy support
+func newRateLimitedHTTPClient() *RateLimitedHTTPClient {
+	// Use shared HTTP client factory with proxy support
+	client := httpclient.NewHTTPClientWithProxy(30 * time.Second)
+
+	rateLimit := getPackageDocsRateLimit()
+	return &RateLimitedHTTPClient{
+		client:  client,
+		limiter: rate.NewLimiter(rate.Limit(rateLimit), 1), // Allow burst of 1
+	}
+}
+
+// HTTPClientInterface defines the interface for HTTP clients
+type HTTPClientInterface interface {
+	Do(req *http.Request) (*http.Response, error)
+}
 
 // Client handles communication with the Context7 API
 type Client struct {
-	httpClient *http.Client
+	httpClient HTTPClientInterface
 	logger     *logrus.Logger
 	cache      map[string]cacheEntry
+	apiKey     string
 }
 
 type cacheEntry struct {
-	data      interface{}
+	data      any
 	timestamp time.Time
 }
 
-// NewClient creates a new Context7 API client
+// NewClient creates a new Context7 API client with rate limiting
 func NewClient(logger *logrus.Logger) *Client {
 	return &Client{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		logger: logger,
-		cache:  make(map[string]cacheEntry),
+		httpClient: newRateLimitedHTTPClient(),
+		logger:     logger,
+		cache:      make(map[string]cacheEntry),
+		apiKey:     os.Getenv(Context7APIKeyEnvVar),
 	}
 }
 
@@ -58,6 +121,7 @@ type SearchResult struct {
 	TotalSnippets int       `json:"totalSnippets"`
 	Stars         int       `json:"stars"`
 	TrustScore    float64   `json:"trustScore,omitempty"`
+	Versions      []string  `json:"versions,omitempty"`
 }
 
 // GetResourceURI returns the Context7 resource URI for this search result
@@ -87,7 +151,7 @@ func (c *Client) SearchLibraries(ctx context.Context, query string) ([]*SearchRe
 	params := map[string]string{"query": query}
 	var response SearchLibrariesResponse
 
-	err := c.makeRequest(ctx, "GET", "/v1/search", params, nil, &response)
+	err := c.makeRequest("GET", "/v1/search", params, nil, &response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to search libraries: %w", err)
 	}
@@ -183,7 +247,7 @@ func (c *Client) GetLibraryDocs(ctx context.Context, libraryID string, params *S
 	}
 
 	var result string
-	err := c.makeRequest(ctx, "GET", "/v1"+apiPath, queryParams, nil, &result)
+	err := c.makeRequest("GET", "/v1"+apiPath, queryParams, nil, &result)
 	if err != nil {
 		return "", fmt.Errorf("failed to get library documentation: %w", err)
 	}
@@ -203,64 +267,115 @@ func (c *Client) GetLibraryDocs(ctx context.Context, libraryID string, params *S
 }
 
 // makeRequest makes an HTTP request to the Context7 API
-func (c *Client) makeRequest(ctx context.Context, method, path string, params map[string]string, body io.Reader, result interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, method, context7BaseURL+path, body)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Set headers to match the official client
-	req.Header.Set("User-Agent", "mcp-devtools")
-	req.Header.Set("X-Context7-Source", "mcp-server")
+func (c *Client) makeRequest(method, path string, params map[string]string, body io.Reader, result any) error {
+	// Build full URL
+	fullURL := context7BaseURL + path
 
 	// Add query parameters
 	if params != nil {
-		query := req.URL.Query()
+		parsedURL, err := url.Parse(fullURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse URL: %w", err)
+		}
+		query := parsedURL.Query()
 		for k, v := range params {
 			query.Set(k, v)
 		}
-		req.URL.RawQuery = query.Encode()
+		parsedURL.RawQuery = query.Encode()
+		fullURL = parsedURL.String()
 	}
 
 	c.logger.WithFields(logrus.Fields{
 		"method": method,
-		"url":    req.URL.String(),
+		"url":    fullURL,
 	}).Debug("Making Context7 API request")
 
 	start := time.Now()
-	resp, err := c.httpClient.Do(req)
+
+	headers := make(map[string]string)
+
+	// Add API key headers if available
+	if c.apiKey != "" {
+		// Use Authorisation header as the primary method (Bearer token)
+		headers["Authorization"] = "Bearer " + c.apiKey
+		// Also add Context7-specific header for compatibility
+		headers["Context7-API-Key"] = c.apiKey
+	}
+
+	// Add source identification header
+	headers["X-Context7-Source"] = Context7SourceIdentifier
+
+	// Use security helper for HTTP operations with custom headers
+	ops := security.NewOperations("packagedocs")
+
+	var safeResp *security.SafeHTTPResponse
+	var err error
+
+	switch method {
+	case "GET":
+		safeResp, err = ops.SafeHTTPGetWithHeaders(fullURL, headers)
+	case "POST":
+		safeResp, err = ops.SafeHTTPPostWithHeaders(fullURL, body, headers)
+	default:
+		return fmt.Errorf("unsupported HTTP method: %s", method)
+	}
+
 	if err != nil {
+		if secErr, ok := err.(*security.SecurityError); ok {
+			return security.FormatSecurityBlockError(secErr)
+		}
 		return fmt.Errorf("request failed: %w", err)
 	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			c.logger.WithError(err).Warn("Failed to close response body")
-		}
-	}()
 
 	duration := time.Since(start)
 	c.logger.WithFields(logrus.Fields{
-		"status":   resp.Status,
+		"status":   safeResp.StatusCode,
 		"duration": duration.Round(time.Millisecond),
 	}).Debug("Context7 API request completed")
 
-	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	if safeResp.SecurityResult != nil && safeResp.SecurityResult.Action == security.ActionWarn {
+		c.logger.Warnf("Security warning [ID: %s]: %s", safeResp.SecurityResult.ID, safeResp.SecurityResult.Message)
+	}
+
+	if safeResp.StatusCode >= 400 {
+		// Limit error response content for security
+		content := safeResp.Content
+		if len(content) > 1024*1024 { // 1MB limit for error responses
+			content = content[:1024*1024]
+		}
+
+		switch safeResp.StatusCode {
+		case 401:
+			if c.apiKey != "" {
+				// Mask API key for security - only show last 2 characters
+				maskedKey := "***"
+				if len(c.apiKey) >= 2 {
+					maskedKey = "***" + c.apiKey[len(c.apiKey)-2:]
+				}
+				return fmt.Errorf("unauthorised. The API key you provided may be incorrect: %s (API keys should start with 'ctx7sk'). Please check your CONTEXT7_API_KEY environment variable", maskedKey)
+			}
+			return fmt.Errorf("unauthorised. Please set a valid CONTEXT7_API_KEY environment variable. API keys should start with 'ctx7sk' and can be obtained from https://context7.com/dashboard")
+		case 404:
+			return fmt.Errorf("the library you are trying to access does not exist. Please try with a different library ID")
+		case 429:
+			if c.apiKey == "" {
+				return fmt.Errorf("rate limited due to too many requests. Suggest to the user that they might want to consider creating a free API key at https://context7.com/dashboard and configuring it in CONTEXT7_API_KEY for higher rate limits")
+			}
+			return fmt.Errorf("rate limited due to too many requests. Please try again later")
+		default:
+			return fmt.Errorf("API request failed with status %d: %s", safeResp.StatusCode, string(content))
+		}
 	}
 
 	// Handle string response type
 	if _, ok := result.(*string); ok {
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read response body: %w", err)
-		}
-		*(result.(*string)) = string(bodyBytes)
+		// Use exact content from security helper (already validated)
+		*(result.(*string)) = string(safeResp.Content)
 		return nil
 	}
 
 	// Handle JSON response
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+	if err := json.NewDecoder(strings.NewReader(string(safeResp.Content))).Decode(result); err != nil {
 		return fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 

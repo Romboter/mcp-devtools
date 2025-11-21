@@ -3,7 +3,6 @@ package shadcnui
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,6 +14,8 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/sammcj/mcp-devtools/internal/registry"
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/tools"
 	"github.com/sammcj/mcp-devtools/internal/tools/packageversions"
 	"github.com/sirupsen/logrus"
 )
@@ -34,10 +35,10 @@ func init() {
 func (t *UnifiedShadcnTool) Definition() mcp.Tool {
 	return mcp.NewTool(
 		"shadcn",
-		mcp.WithDescription(`shadcn ui components. Supports listing, searching, getting details, and examples for shadcn ui components.
+		mcp.WithDescription(`List, search, get details & examples for shadcn ui components.
 
 Actions:
-- list: Get all available shadcn ui components
+- list: Get all available components
 - search: Search components by keyword in name or description
 - details: Get detailed information about a specific component
 - examples: Get usage examples for a specific component
@@ -58,11 +59,16 @@ Examples:
 		mcp.WithString("componentName",
 			mcp.Description("Component name (required for 'details' and 'examples' actions)"),
 		),
+		// Read-only annotations for UI component data tool
+		mcp.WithReadOnlyHintAnnotation(true),     // Only fetches UI component data, doesn't modify environment
+		mcp.WithDestructiveHintAnnotation(false), // No destructive operations
+		mcp.WithIdempotentHintAnnotation(true),   // Same component queries return same results
+		mcp.WithOpenWorldHintAnnotation(true),    // Fetches from external shadcn/ui data sources
 	)
 }
 
 // Execute executes the unified shadcn tool
-func (t *UnifiedShadcnTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *UnifiedShadcnTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	// Parse action (required)
 	action, ok := args["action"].(string)
 	if !ok || action == "" {
@@ -73,32 +79,32 @@ func (t *UnifiedShadcnTool) Execute(ctx context.Context, logger *logrus.Logger, 
 
 	switch action {
 	case "list":
-		return t.executeList(ctx, logger, cache)
+		return t.executeList(logger, cache)
 	case "search":
 		query, ok := args["query"].(string)
 		if !ok || query == "" {
 			return nil, fmt.Errorf("query parameter is required for search action")
 		}
-		return t.executeSearch(ctx, logger, cache, query)
+		return t.executeSearch(logger, cache, query)
 	case "details":
 		componentName, ok := args["componentName"].(string)
 		if !ok || componentName == "" {
 			return nil, fmt.Errorf("componentName parameter is required for details action")
 		}
-		return t.executeDetails(ctx, logger, cache, componentName)
+		return t.executeDetails(logger, cache, componentName)
 	case "examples":
 		componentName, ok := args["componentName"].(string)
 		if !ok || componentName == "" {
 			return nil, fmt.Errorf("componentName parameter is required for examples action")
 		}
-		return t.executeExamples(ctx, logger, cache, componentName)
+		return t.executeExamples(logger, cache, componentName)
 	default:
 		return nil, fmt.Errorf("invalid action: %s. Must be one of: list, search, details, examples", action)
 	}
 }
 
 // executeList handles the list action
-func (t *UnifiedShadcnTool) executeList(ctx context.Context, logger *logrus.Logger, cache *sync.Map) (*mcp.CallToolResult, error) {
+func (t *UnifiedShadcnTool) executeList(logger *logrus.Logger, cache *sync.Map) (*mcp.CallToolResult, error) {
 	logger.Info("Listing shadcn ui components")
 
 	// Check cache
@@ -119,7 +125,7 @@ func (t *UnifiedShadcnTool) executeList(ctx context.Context, logger *logrus.Logg
 }
 
 // executeSearch handles the search action
-func (t *UnifiedShadcnTool) executeSearch(ctx context.Context, logger *logrus.Logger, cache *sync.Map, query string) (*mcp.CallToolResult, error) {
+func (t *UnifiedShadcnTool) executeSearch(logger *logrus.Logger, cache *sync.Map, query string) (*mcp.CallToolResult, error) {
 	logger.Infof("Searching shadcn ui components with query: %s", query)
 
 	// Get component list (from cache or fetch)
@@ -155,7 +161,7 @@ func (t *UnifiedShadcnTool) executeSearch(ctx context.Context, logger *logrus.Lo
 }
 
 // executeDetails handles the details action
-func (t *UnifiedShadcnTool) executeDetails(ctx context.Context, logger *logrus.Logger, cache *sync.Map, componentName string) (*mcp.CallToolResult, error) {
+func (t *UnifiedShadcnTool) executeDetails(logger *logrus.Logger, cache *sync.Map, componentName string) (*mcp.CallToolResult, error) {
 	logger.Infof("Getting details for shadcn ui component: %s", componentName)
 
 	cacheKey := getComponentDetailsCachePrefix + componentName
@@ -168,21 +174,30 @@ func (t *UnifiedShadcnTool) executeDetails(ctx context.Context, logger *logrus.L
 	}
 
 	componentURL := fmt.Sprintf("%s/%s", ShadcnDocsComponents, componentName)
-	resp, err := t.client.Get(componentURL)
+
+	// Use security helper for consistent security handling
+	ops := security.NewOperations("shadcnui")
+	safeResp, err := ops.SafeHTTPGet(componentURL)
 	if err != nil {
+		if secErr, ok := err.(*security.SecurityError); ok {
+			return nil, fmt.Errorf("security block [ID: %s]: %s", secErr.GetSecurityID(), secErr.Error())
+		}
 		return nil, fmt.Errorf("failed to fetch component page %s: %w", componentURL, err)
 	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			logger.WithError(err).Errorf("Failed to close response body for %s", componentURL)
-		}
-	}()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch component page %s: status %d", componentURL, resp.StatusCode)
+	if safeResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch component page %s: status %d", componentURL, safeResp.StatusCode)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	// Handle security warnings
+	if safeResp.SecurityResult != nil && safeResp.SecurityResult.Action == security.ActionWarn {
+		logger.Warnf("Security warning [ID: %s]: %s", safeResp.SecurityResult.ID, safeResp.SecurityResult.Message)
+	}
+
+	bodyBytes := safeResp.Content
+
+	// Parse the HTML document
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse component page %s: %w", componentURL, err)
 	}
@@ -231,7 +246,7 @@ func (t *UnifiedShadcnTool) executeDetails(ctx context.Context, logger *logrus.L
 }
 
 // executeExamples handles the examples action
-func (t *UnifiedShadcnTool) executeExamples(ctx context.Context, logger *logrus.Logger, cache *sync.Map, componentName string) (*mcp.CallToolResult, error) {
+func (t *UnifiedShadcnTool) executeExamples(logger *logrus.Logger, cache *sync.Map, componentName string) (*mcp.CallToolResult, error) {
 	logger.Infof("Getting examples for shadcn ui component: %s", componentName)
 
 	cacheKey := getComponentExamplesCachePrefix + componentName
@@ -247,17 +262,21 @@ func (t *UnifiedShadcnTool) executeExamples(ctx context.Context, logger *logrus.
 
 	// 1. Scrape from component's doc page
 	componentURL := fmt.Sprintf("%s/%s", ShadcnDocsComponents, componentName)
-	resp, err := t.client.Get(componentURL)
+
+	// Use security helper for consistent security handling
+	ops := security.NewOperations("shadcnui")
+	safeResp, err := ops.SafeHTTPGet(componentURL)
 	if err != nil {
 		logger.Warnf("Failed to fetch component page %s for examples: %v", componentURL, err)
 	} else {
-		defer func() {
-			if err := resp.Body.Close(); err != nil {
-				logger.WithError(err).Errorf("Failed to close response body for component page %s", componentURL)
+		if safeResp.StatusCode == http.StatusOK {
+			// Handle security warnings
+			if safeResp.SecurityResult != nil && safeResp.SecurityResult.Action == security.ActionWarn {
+				logger.Warnf("Security warning [ID: %s]: %s", safeResp.SecurityResult.ID, safeResp.SecurityResult.Message)
 			}
-		}()
-		if resp.StatusCode == http.StatusOK {
-			doc, docErr := goquery.NewDocumentFromReader(resp.Body)
+
+			bodyBytes := safeResp.Content
+			doc, docErr := goquery.NewDocumentFromReader(strings.NewReader(string(bodyBytes)))
 			if docErr != nil {
 				logger.Warnf("Failed to parse component page %s for examples: %v", componentURL, docErr)
 			} else {
@@ -275,37 +294,30 @@ func (t *UnifiedShadcnTool) executeExamples(ctx context.Context, logger *logrus.
 				})
 			}
 		} else {
-			logger.Warnf("Failed to fetch component page %s: status %d", componentURL, resp.StatusCode)
+			logger.Warnf("Failed to fetch component page %s: status %d", componentURL, safeResp.StatusCode)
 		}
 	}
 
 	// 2. Attempt to fetch the demo file from GitHub
 	demoURL := fmt.Sprintf("%s/apps/www/registry/default/example/%s-demo.tsx", ShadcnRawGitHubURL, componentName)
-	respDemo, errDemo := t.client.Get(demoURL)
+	safeDemoResp, errDemo := ops.SafeHTTPGet(demoURL)
 
 	if errDemo != nil {
 		logger.Warnf("Failed to fetch demo file %s: %v. Proceeding without it.", demoURL, errDemo)
-	} else if respDemo != nil {
-		defer func() {
-			if err := respDemo.Body.Close(); err != nil {
-				logger.WithError(err).Errorf("Failed to close response body for demo file %s", demoURL)
-			}
-		}()
-		if respDemo.StatusCode == http.StatusOK {
-			bodyBytes, readErr := io.ReadAll(respDemo.Body)
-			if readErr != nil {
-				logger.Warnf("Failed to read demo file %s: %v", demoURL, readErr)
-			} else {
-				titleCaser := cases.Title(language.AmericanEnglish, cases.NoLower)
-				examples = append(examples, ComponentExample{
-					Title:       fmt.Sprintf("%s Demo from GitHub", titleCaser.String(componentName)),
-					Code:        string(bodyBytes),
-					Description: "Example .tsx demo file from the official shadcn ui GitHub repository.",
-				})
-			}
-		} else {
-			logger.Warnf("Failed to fetch demo file %s: status %d", demoURL, respDemo.StatusCode)
+	} else if safeDemoResp.StatusCode == http.StatusOK {
+		// Handle security warnings for demo file
+		if safeDemoResp.SecurityResult != nil && safeDemoResp.SecurityResult.Action == security.ActionWarn {
+			logger.Warnf("Security warning for demo file [ID: %s]: %s", safeDemoResp.SecurityResult.ID, safeDemoResp.SecurityResult.Message)
 		}
+
+		titleCaser := cases.Title(language.AmericanEnglish, cases.NoLower)
+		examples = append(examples, ComponentExample{
+			Title:       fmt.Sprintf("%s Demo from GitHub", titleCaser.String(componentName)),
+			Code:        string(safeDemoResp.Content),
+			Description: "Example .tsx demo file from the official shadcn ui GitHub repository.",
+		})
+	} else if safeDemoResp != nil {
+		logger.Warnf("Failed to fetch demo file %s: status %d", demoURL, safeDemoResp.StatusCode)
 	}
 
 	if len(examples) == 0 {
@@ -324,21 +336,28 @@ func (t *UnifiedShadcnTool) executeExamples(ctx context.Context, logger *logrus.
 
 // fetchComponentsList fetches and caches the component list
 func (t *UnifiedShadcnTool) fetchComponentsList(logger *logrus.Logger, cache *sync.Map) ([]ComponentInfo, error) {
-	resp, err := t.client.Get(ShadcnDocsComponents)
+	// Use security helper for consistent security handling
+	ops := security.NewOperations("shadcnui")
+	safeResp, err := ops.SafeHTTPGet(ShadcnDocsComponents)
 	if err != nil {
+		if secErr, ok := err.(*security.SecurityError); ok {
+			return nil, fmt.Errorf("security block [ID: %s]: %s", secErr.GetSecurityID(), secErr.Error())
+		}
 		return nil, fmt.Errorf("failed to fetch shadcn components page: %w", err)
 	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			logger.WithError(closeErr).Warn("Failed to close response body")
-		}
-	}()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch shadcn components page: status %d", resp.StatusCode)
+	if safeResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch shadcn components page: status %d", safeResp.StatusCode)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	// Handle security warnings
+	if safeResp.SecurityResult != nil && safeResp.SecurityResult.Action == security.ActionWarn {
+		logger.Warnf("Security warning [ID: %s]: %s", safeResp.SecurityResult.ID, safeResp.SecurityResult.Message)
+	}
+
+	bodyBytes := safeResp.Content
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse shadcn components page: %w", err)
 	}
@@ -365,4 +384,84 @@ func (t *UnifiedShadcnTool) fetchComponentsList(logger *logrus.Logger, cache *sy
 	})
 
 	return components, nil
+}
+
+// ProvideExtendedInfo provides detailed usage information for the shadcn tool
+func (t *UnifiedShadcnTool) ProvideExtendedInfo() *tools.ExtendedHelp {
+	return &tools.ExtendedHelp{
+		Examples: []tools.ToolExample{
+			{
+				Description: "List all available shadcn/ui components",
+				Arguments: map[string]any{
+					"action": "list",
+				},
+				ExpectedResult: "Returns a complete list of all available shadcn/ui components with names and URLs",
+			},
+			{
+				Description: "Search for button-related components",
+				Arguments: map[string]any{
+					"action": "search",
+					"query":  "button",
+				},
+				ExpectedResult: "Returns components matching 'button' in their name (button, toggle-button, etc.)",
+			},
+			{
+				Description: "Get detailed information about the dialog component",
+				Arguments: map[string]any{
+					"action":        "details",
+					"componentName": "dialog",
+				},
+				ExpectedResult: "Returns detailed info about the dialog component including description, installation command, usage examples, and props",
+			},
+			{
+				Description: "Get code examples for the table component",
+				Arguments: map[string]any{
+					"action":        "examples",
+					"componentName": "table",
+				},
+				ExpectedResult: "Returns React/TypeScript code examples showing how to use the table component in practice",
+			},
+			{
+				Description: "Search for form-related components",
+				Arguments: map[string]any{
+					"action": "search",
+					"query":  "form",
+				},
+				ExpectedResult: "Returns components related to forms (form, input, select, checkbox, etc.)",
+			},
+		},
+		CommonPatterns: []string{
+			"Start with 'list' action to see all available components",
+			"Use 'search' to find components by keyword (e.g., 'form', 'button', 'navigation')",
+			"Get component 'details' first to understand usage and installation",
+			"Follow up with 'examples' action to see practical implementation code",
+			"Common workflow: search → details → examples → implement",
+			"Component names must match exactly (use lowercase with hyphens)",
+		},
+		Troubleshooting: []tools.TroubleshootingTip{
+			{
+				Problem:  "Component not found error when using 'details' or 'examples'",
+				Solution: "Use the 'list' or 'search' action first to get the exact component name. Names are case-sensitive and use lowercase with hyphens (e.g., 'toggle-group', not 'ToggleGroup').",
+			},
+			{
+				Problem:  "No examples returned for a component",
+				Solution: "Some components may have limited examples in the documentation. Try the 'details' action instead which provides usage information and installation commands.",
+			},
+			{
+				Problem:  "Search returns too many/few results",
+				Solution: "Use more specific keywords for fewer results (e.g., 'data-table' vs 'table') or broader terms for more results (e.g., 'input' to find all input-related components).",
+			},
+			{
+				Problem:  "Installation command missing from details",
+				Solution: "Not all components have explicit installation commands. Use the general pattern: 'npx shadcn-ui@latest add [component-name]' where component-name matches the name from the list.",
+			},
+		},
+		ParameterDetails: map[string]string{
+			"action":        "The operation to perform. 'list' shows all components, 'search' finds components by keyword, 'details' gets comprehensive info, 'examples' provides code samples.",
+			"query":         "Search term for finding components. Searches in component names only. Use keywords like 'button', 'form', 'navigation', 'data' to find related components.",
+			"componentName": "Exact component name from the list (use lowercase with hyphens). Get correct names from 'list' or 'search' actions first.",
+		},
+		WhenToUse:    "Use this tool when building React applications with shadcn/ui components. Ideal for discovering available components, understanding their API, getting installation commands, and finding implementation examples.",
+		WhenNotToUse: "Don't use for non-shadcn/ui components, Vue/Angular frameworks, or general React documentation. This tool is specifically for the shadcn/ui component library.",
+	}
 }

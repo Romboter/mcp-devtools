@@ -9,11 +9,12 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/sammcj/mcp-devtools/internal/security"
 )
 
 // formatResponse formats the response for MCP output
-func (t *DocumentProcessorTool) formatResponse(response *DocumentProcessingResponse) map[string]interface{} {
-	result := map[string]interface{}{
+func (t *DocumentProcessorTool) formatResponse(response *DocumentProcessingResponse) map[string]any {
+	result := map[string]any{
 		"source":          response.Source,
 		"content":         response.Content,
 		"cache_hit":       response.CacheHit,
@@ -54,7 +55,7 @@ func (t *DocumentProcessorTool) shouldSaveToFile(req *DocumentProcessingRequest)
 }
 
 // handleSaveToFile saves the converted content to the specified file and returns a success message
-func (t *DocumentProcessorTool) handleSaveToFile(savePath string, response *DocumentProcessingResponse) (*mcp.CallToolResult, error) {
+func (t *DocumentProcessorTool) handleSaveToFile(savePath string, response *DocumentProcessingResponse, securityNotice string) (*mcp.CallToolResult, error) {
 	// Auto-generate save path if not provided
 	if savePath == "" {
 		generatedPath, err := t.generateSavePath(response.Source)
@@ -69,25 +70,30 @@ func (t *DocumentProcessorTool) handleSaveToFile(savePath string, response *Docu
 		return nil, fmt.Errorf("save_to must be a fully qualified absolute path, got: %s", savePath)
 	}
 
+	// Security: Check file access for save path
+	if err := security.CheckFileAccess(savePath); err != nil {
+		return nil, fmt.Errorf("save file access denied: %w", err)
+	}
+
 	// Create directory if it doesn't exist
 	saveDir := filepath.Dir(savePath)
-	if err := os.MkdirAll(saveDir, 0755); err != nil {
+	if err := os.MkdirAll(saveDir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create save directory %s: %w", saveDir, err)
 	}
 
 	// Write content to file
-	if err := os.WriteFile(savePath, []byte(response.Content), 0644); err != nil {
+	if err := os.WriteFile(savePath, []byte(response.Content), 0600); err != nil {
 		return nil, fmt.Errorf("failed to write content to %s: %w", savePath, err)
 	}
 
 	// Create success response
-	result := map[string]interface{}{
+	result := map[string]any{
 		"success":   true,
 		"message":   "Content successfully exported to file",
 		"save_path": savePath,
 		"source":    response.Source,
 		"cache_hit": response.CacheHit,
-		"metadata": map[string]interface{}{
+		"metadata": map[string]any{
 			"file_size": len(response.Content),
 		},
 		"processing_info": response.ProcessingInfo,
@@ -95,12 +101,17 @@ func (t *DocumentProcessorTool) handleSaveToFile(savePath string, response *Docu
 
 	// Include document metadata if available
 	if response.Metadata != nil {
-		if metadata, ok := result["metadata"].(map[string]interface{}); ok {
+		if metadata, ok := result["metadata"].(map[string]any); ok {
 			metadata["document_title"] = response.Metadata.Title
 			metadata["document_author"] = response.Metadata.Author
 			metadata["page_count"] = response.Metadata.PageCount
 			metadata["word_count"] = response.Metadata.WordCount
 		}
+	}
+
+	// Add security notice if present
+	if securityNotice != "" {
+		result["security_notice"] = securityNotice
 	}
 
 	return t.newToolResultJSON(result)
@@ -137,6 +148,11 @@ func (t *DocumentProcessorTool) generateSavePath(source string) (string, error) 
 		source = filepath.Join(cwd, source)
 	}
 
+	// Security: Check file access for source when generating save path
+	if err := security.CheckFileAccess(source); err != nil {
+		return "", fmt.Errorf("source file access denied: %w", err)
+	}
+
 	// Get directory and filename
 	sourceDir := filepath.Dir(source)
 	sourceFilename := filepath.Base(source)
@@ -149,7 +165,7 @@ func (t *DocumentProcessorTool) generateSavePath(source string) (string, error) 
 }
 
 // newToolResultJSON creates a new tool result with JSON content
-func (t *DocumentProcessorTool) newToolResultJSON(data interface{}) (*mcp.CallToolResult, error) {
+func (t *DocumentProcessorTool) newToolResultJSON(data any) (*mcp.CallToolResult, error) {
 	jsonBytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal JSON: %w", err)

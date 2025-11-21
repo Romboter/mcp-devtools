@@ -37,16 +37,17 @@ func (t *PythonTool) Definition() mcp.Tool {
 		mcp.WithArray("requirements",
 			mcp.Description("Array of requirements from requirements.txt"),
 			mcp.Required(),
+			mcp.WithStringItems(),
 		),
 	)
 }
 
 // Execute executes the tool's logic
-func (t *PythonTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *PythonTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Getting latest Python package versions")
 
 	// Parse requirements
-	requirementsRaw, ok := args["requirements"].([]interface{})
+	requirementsRaw, ok := args["requirements"].([]any)
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter: requirements")
 	}
@@ -60,16 +61,10 @@ func (t *PythonTool) Execute(ctx context.Context, logger *logrus.Logger, cache *
 	}
 
 	// Parse requirements
-	packages, err := t.parseRequirements(requirements)
-	if err != nil {
-		return nil, err
-	}
+	packages := t.parseRequirements(requirements)
 
 	// Get latest versions
-	results, err := t.getLatestVersions(logger, cache, packages)
-	if err != nil {
-		return nil, err
-	}
+	results := t.getLatestVersions(logger, cache, packages)
 
 	return packageversions.NewToolResultJSON(results)
 }
@@ -81,7 +76,7 @@ type Package struct {
 }
 
 // parseRequirements parses requirements.txt lines into packages
-func (t *PythonTool) parseRequirements(requirements []string) ([]Package, error) {
+func (t *PythonTool) parseRequirements(requirements []string) []Package {
 	var packages []Package
 
 	for _, req := range requirements {
@@ -116,11 +111,11 @@ func (t *PythonTool) parseRequirements(requirements []string) ([]Package, error)
 		})
 	}
 
-	return packages, nil
+	return packages
 }
 
 // getLatestVersions gets the latest versions for Python packages
-func (t *PythonTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, packages []Package) ([]packageversions.PackageVersion, error) {
+func (t *PythonTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, packages []Package) []packageversions.PackageVersion {
 	var results []packageversions.PackageVersion
 
 	for _, pkg := range packages {
@@ -130,7 +125,7 @@ func (t *PythonTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, p
 			logger.WithField("package", pkg.Name).Debug("Using cached Python package version")
 			result := cachedVersion.(packageversions.PackageVersion)
 			if pkg.Version != "" {
-				result.CurrentVersion = packageversions.StringPtr(pkg.Version)
+				result.CurrentVersion = packageversions.StringPtrUnlessLatest(pkg.Version)
 			}
 			results = append(results, result)
 			continue
@@ -151,7 +146,7 @@ func (t *PythonTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, p
 				SkipReason:    fmt.Sprintf("Failed to fetch package info: %v", err),
 			}
 			if pkg.Version != "" {
-				result.CurrentVersion = packageversions.StringPtr(pkg.Version)
+				result.CurrentVersion = packageversions.StringPtrUnlessLatest(pkg.Version)
 			}
 			results = append(results, result)
 			continue
@@ -164,7 +159,7 @@ func (t *PythonTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, p
 			Registry:      "pypi",
 		}
 		if pkg.Version != "" {
-			result.CurrentVersion = packageversions.StringPtr(pkg.Version)
+			result.CurrentVersion = packageversions.StringPtrUnlessLatest(pkg.Version)
 		}
 
 		// Cache result
@@ -178,7 +173,7 @@ func (t *PythonTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, p
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
 
-	return results, nil
+	return results
 }
 
 // getLatestVersion gets the latest version for a Python package

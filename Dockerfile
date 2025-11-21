@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Set working directory
 WORKDIR /app
@@ -19,12 +19,13 @@ ARG COMMIT=unknown
 ARG BUILD_DATE=unknown
 
 # Build with version information
-RUN CGO_ENABLED=0 GOOS=linux go build \
+# Note: CGO_ENABLED=0 excludes codeskim tool (requires CGO) but keeps Docker image lightweight
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
   -ldflags "-X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
   -o mcp-devtools .
 
 # Final stage
-FROM python:3.13-alpine
+FROM python:3.14-alpine
 
 # Set working directory
 WORKDIR /app
@@ -53,8 +54,16 @@ COPY --from=builder /app/mcp-devtools .
 # Copy the Python scripts
 COPY internal/tools/docprocessing/python/docling_processor.py ./internal/tools/python/docprocessing/
 
-# Create cache directory
-RUN mkdir -p /app/.mcp-devtools/docling-cache
+# Create a non-root user for security
+RUN addgroup -g 1001 appgroup && \
+    adduser -D -u 1001 -G appgroup appuser
+
+# Create cache directory with proper ownership
+RUN mkdir -p /app/.mcp-devtools/docling-cache && \
+    chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
 
 # Set environment variables for document processing
 # ENV DOCLING_PYTHON_PATH=/usr/local/bin/python3
@@ -68,7 +77,7 @@ RUN mkdir -p /app/.mcp-devtools/docling-cache
 # ENV SEARXNG_BASE_URL=
 # ENV SEARXNG_USERNAME=
 # ENV SEARXNG_PASSWORD=
-# ENV DISABLED_FUNCTIONS=
+# ENV DISABLED_TOOLS=
 
 VOLUME ["/app/.mcp-devtools/docling-cache"]
 

@@ -5,12 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/sammcj/mcp-devtools/internal/security"
 	"github.com/sammcj/mcp-devtools/internal/tools/internetsearch"
 	"github.com/sirupsen/logrus"
 )
@@ -20,6 +22,7 @@ type SearXNGProvider struct {
 	baseURL  string
 	username string
 	password string
+	client   internetsearch.HTTPClientInterface
 }
 
 // SearXNGResponse represents the response from SearXNG API
@@ -51,6 +54,7 @@ func NewSearXNGProvider() *SearXNGProvider {
 		baseURL:  strings.TrimSuffix(baseURL, "/"),
 		username: os.Getenv("SEARXNG_USERNAME"),
 		password: os.Getenv("SEARXNG_PASSWORD"),
+		client:   internetsearch.NewRateLimitedHTTPClient(),
 	}
 }
 
@@ -66,12 +70,12 @@ func (p *SearXNGProvider) IsAvailable() bool {
 
 // GetSupportedTypes returns the search types this provider supports
 func (p *SearXNGProvider) GetSupportedTypes() []string {
-	// SearXNG primarily supports web search, but we'll map all types to web search
+	// SearXNG primarily supports internet search, with various categories
 	return []string{"web", "image", "news", "video"}
 }
 
 // Search executes a search using the SearXNG provider
-func (p *SearXNGProvider) Search(ctx context.Context, logger *logrus.Logger, searchType string, args map[string]interface{}) (*internetsearch.SearchResponse, error) {
+func (p *SearXNGProvider) Search(ctx context.Context, logger *logrus.Logger, searchType string, args map[string]any) (*internetsearch.SearchResponse, error) {
 	query := args["query"].(string)
 
 	logger.WithFields(logrus.Fields{
@@ -81,21 +85,18 @@ func (p *SearXNGProvider) Search(ctx context.Context, logger *logrus.Logger, sea
 		"baseURL":  p.baseURL,
 	}).Debug("SearXNG search parameters")
 
-	// For SearXNG, all search types are handled as web search with different categories
+	// For SearXNG, all search types are handled as internet search with different categories
 	return p.executeSearch(ctx, logger, searchType, args)
 }
 
 // executeSearch handles the actual search execution
-func (p *SearXNGProvider) executeSearch(ctx context.Context, logger *logrus.Logger, searchType string, args map[string]interface{}) (*internetsearch.SearchResponse, error) {
+func (p *SearXNGProvider) executeSearch(ctx context.Context, logger *logrus.Logger, searchType string, args map[string]any) (*internetsearch.SearchResponse, error) {
 	query := args["query"].(string)
 
 	// Parse SearXNG-specific parameters
 	pageno := 1
 	if pagenoRaw, ok := args["pageno"].(float64); ok {
-		pageno = int(pagenoRaw)
-		if pageno < 1 {
-			pageno = 1
-		}
+		pageno = max(int(pagenoRaw), 1)
 	}
 
 	timeRange := ""
@@ -153,6 +154,14 @@ func (p *SearXNGProvider) executeSearch(ctx context.Context, logger *logrus.Logg
 
 	searchURL.RawQuery = params.Encode()
 
+	// Check domain access security before making request
+	if err := security.CheckDomainAccess(searchURL.Hostname()); err != nil {
+		if secErr, ok := err.(*security.SecurityError); ok {
+			return nil, security.FormatSecurityBlockError(secErr)
+		}
+		return nil, err
+	}
+
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL.String(), nil)
 	if err != nil {
@@ -168,12 +177,8 @@ func (p *SearXNGProvider) executeSearch(ctx context.Context, logger *logrus.Logg
 	// Add user agent
 	req.Header.Set("User-Agent", "MCP-DevTools/1.0")
 
-	// Execute request
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	resp, err := client.Do(req)
+	// Execute request using rate-limited client
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("search request failed: %w", err)
 	}
@@ -183,24 +188,49 @@ func (p *SearXNGProvider) executeSearch(ctx context.Context, logger *logrus.Logg
 		}
 	}()
 
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Security analysis on content
+	if security.IsEnabled() {
+		sourceCtx := security.SourceContext{
+			URL:         searchURL.String(),
+			Domain:      searchURL.Hostname(),
+			ContentType: resp.Header.Get("Content-Type"),
+			Tool:        "internetsearch",
+		}
+
+		if secResult, err := security.AnalyseContent(string(body), sourceCtx); err == nil {
+			switch secResult.Action {
+			case security.ActionBlock:
+				return nil, security.FormatSecurityBlockErrorFromResult(secResult)
+			case security.ActionWarn:
+				logger.WithField("security_id", secResult.ID).Warn(secResult.Message)
+			}
+		}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("SearXNG API error: %d %s", resp.StatusCode, resp.Status)
 	}
 
 	// Parse response
 	var searxngResp SearXNGResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searxngResp); err != nil {
+	if err := json.Unmarshal(body, &searxngResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	// Convert to unified format
 	if len(searxngResp.Results) == 0 {
-		return p.createEmptyResponse(query)
+		return p.createEmptyResponse(), nil
 	}
 
 	results := make([]internetsearch.SearchResult, 0, len(searxngResp.Results))
 	for _, searxngResult := range searxngResp.Results {
-		metadata := make(map[string]interface{})
+		metadata := make(map[string]any)
 		metadata["category"] = searchType
 		if language != "all" {
 			metadata["language"] = language
@@ -213,33 +243,27 @@ func (p *SearXNGProvider) executeSearch(ctx context.Context, logger *logrus.Logg
 			Title:       searxngResult.Title,
 			URL:         searxngResult.URL,
 			Description: searxngResult.Content,
-			Type:        searchType,
 			Metadata:    metadata,
 		})
 	}
 
-	return p.createSuccessResponse(query, results, logger)
+	return p.createSuccessResponse(query, results, logger), nil
 }
 
 // Helper functions
-func (p *SearXNGProvider) createEmptyResponse(query string) (*internetsearch.SearchResponse, error) {
-	result := &internetsearch.SearchResponse{
-		Query:       query,
-		ResultCount: 0,
-		Results:     []internetsearch.SearchResult{},
-		Provider:    "searxng",
-		Timestamp:   time.Now(),
+func (p *SearXNGProvider) createEmptyResponse() *internetsearch.SearchResponse {
+	return &internetsearch.SearchResponse{
+		Results:   []internetsearch.SearchResult{},
+		Provider:  "searxng",
+		Timestamp: time.Now(),
 	}
-	return result, nil
 }
 
-func (p *SearXNGProvider) createSuccessResponse(query string, results []internetsearch.SearchResult, logger *logrus.Logger) (*internetsearch.SearchResponse, error) {
+func (p *SearXNGProvider) createSuccessResponse(query string, results []internetsearch.SearchResult, logger *logrus.Logger) *internetsearch.SearchResponse {
 	result := &internetsearch.SearchResponse{
-		Query:       query,
-		ResultCount: len(results),
-		Results:     results,
-		Provider:    "searxng",
-		Timestamp:   time.Now(),
+		Results:   results,
+		Provider:  "searxng",
+		Timestamp: time.Now(),
 	}
 
 	logger.WithFields(logrus.Fields{
@@ -248,5 +272,5 @@ func (p *SearXNGProvider) createSuccessResponse(query string, results []internet
 		"provider":     "searxng",
 	}).Info("SearXNG search completed successfully")
 
-	return result, nil
+	return result
 }

@@ -24,14 +24,14 @@ func (t *PyProjectTool) Definition() mcp.Tool {
 		mcp.WithDescription("Check latest stable versions for Python packages in pyproject.toml"),
 		mcp.WithObject("dependencies",
 			mcp.Description("Dependencies object from pyproject.toml"),
-			mcp.Properties(map[string]interface{}{}),
+			mcp.Properties(map[string]any{}),
 			mcp.Required(),
 		),
 	)
 }
 
 // Execute executes the tool's logic
-func (t *PyProjectTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *PyProjectTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Getting latest Python package versions from pyproject.toml")
 
 	// Parse dependencies
@@ -41,7 +41,7 @@ func (t *PyProjectTool) Execute(ctx context.Context, logger *logrus.Logger, cach
 	}
 
 	// Convert to map[string]interface{}
-	depsMap, ok := depsRaw.(map[string]interface{})
+	depsMap, ok := depsRaw.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("invalid dependencies format: expected object")
 	}
@@ -50,7 +50,7 @@ func (t *PyProjectTool) Execute(ctx context.Context, logger *logrus.Logger, cach
 	var packages []Package
 
 	// Process main dependencies
-	if mainDeps, ok := depsMap["dependencies"].(map[string]interface{}); ok {
+	if mainDeps, ok := depsMap["dependencies"].(map[string]any); ok {
 		for name, version := range mainDeps {
 			if vStr, ok := version.(string); ok {
 				packages = append(packages, Package{
@@ -62,9 +62,9 @@ func (t *PyProjectTool) Execute(ctx context.Context, logger *logrus.Logger, cach
 	}
 
 	// Process optional dependencies
-	if optDeps, ok := depsMap["optional-dependencies"].(map[string]interface{}); ok {
+	if optDeps, ok := depsMap["optional-dependencies"].(map[string]any); ok {
 		for _, group := range optDeps {
-			if groupDeps, ok := group.(map[string]interface{}); ok {
+			if groupDeps, ok := group.(map[string]any); ok {
 				for name, version := range groupDeps {
 					if vStr, ok := version.(string); ok {
 						packages = append(packages, Package{
@@ -78,7 +78,7 @@ func (t *PyProjectTool) Execute(ctx context.Context, logger *logrus.Logger, cach
 	}
 
 	// Process dev dependencies
-	if devDeps, ok := depsMap["dev-dependencies"].(map[string]interface{}); ok {
+	if devDeps, ok := depsMap["dev-dependencies"].(map[string]any); ok {
 		for name, version := range devDeps {
 			if vStr, ok := version.(string); ok {
 				packages = append(packages, Package{
@@ -90,16 +90,12 @@ func (t *PyProjectTool) Execute(ctx context.Context, logger *logrus.Logger, cach
 	}
 
 	// Get latest versions
-	results, err := t.getLatestVersions(logger, cache, packages)
-	if err != nil {
-		return nil, err
-	}
-
+	results := t.getLatestVersions(logger, cache, packages)
 	return packageversions.NewToolResultJSON(results)
 }
 
 // getLatestVersions gets the latest versions for Python packages
-func (t *PyProjectTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, packages []Package) ([]packageversions.PackageVersion, error) {
+func (t *PyProjectTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, packages []Package) []packageversions.PackageVersion {
 	var results []packageversions.PackageVersion
 
 	// Create a Python tool to reuse its functionality
@@ -117,7 +113,7 @@ func (t *PyProjectTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map
 			logger.WithField("package", pkg.Name).Debug("Using cached Python package version")
 			result := cachedVersion.(packageversions.PackageVersion)
 			if version != "" {
-				result.CurrentVersion = packageversions.StringPtr(version)
+				result.CurrentVersion = packageversions.StringPtrUnlessLatest(version)
 			}
 			results = append(results, result)
 			continue
@@ -138,7 +134,7 @@ func (t *PyProjectTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map
 				SkipReason:    fmt.Sprintf("Failed to fetch package info: %v", err),
 			}
 			if version != "" {
-				result.CurrentVersion = packageversions.StringPtr(version)
+				result.CurrentVersion = packageversions.StringPtrUnlessLatest(version)
 			}
 			results = append(results, result)
 			continue
@@ -151,7 +147,7 @@ func (t *PyProjectTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map
 			Registry:      "pypi",
 		}
 		if version != "" {
-			result.CurrentVersion = packageversions.StringPtr(version)
+			result.CurrentVersion = packageversions.StringPtrUnlessLatest(version)
 		}
 
 		// Cache result
@@ -165,7 +161,7 @@ func (t *PyProjectTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
 
-	return results, nil
+	return results
 }
 
 // cleanPyProjectVersion cleans a version string from pyproject.toml
@@ -175,8 +171,8 @@ func cleanPyProjectVersion(version string) string {
 
 	// Remove version specifiers
 	for _, prefix := range []string{">=", "<=", ">", "<", "==", "~=", "!="} {
-		if strings.HasPrefix(version, prefix) {
-			version = strings.TrimPrefix(version, prefix)
+		if after, ok := strings.CutPrefix(version, prefix); ok {
+			version = after
 			break
 		}
 	}

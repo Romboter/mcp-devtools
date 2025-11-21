@@ -2,7 +2,11 @@ package tools_test
 
 import (
 	"fmt"
+	"net/http"
+	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sammcj/mcp-devtools/internal/tools/shadcnui"
 	"github.com/sammcj/mcp-devtools/tests/testutils"
@@ -27,12 +31,16 @@ func TestUnifiedShadcnTool_Definition(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_MissingAction(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{}
+	args := map[string]any{}
 
 	_, err := tool.Execute(ctx, logger, cache, args)
 
@@ -41,12 +49,16 @@ func TestUnifiedShadcnTool_Execute_MissingAction(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_EmptyAction(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": "",
 	}
 
@@ -57,12 +69,16 @@ func TestUnifiedShadcnTool_Execute_EmptyAction(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_InvalidActionType(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": 123, // Invalid type
 	}
 
@@ -73,12 +89,16 @@ func TestUnifiedShadcnTool_Execute_InvalidActionType(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_InvalidAction(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": "invalid",
 	}
 
@@ -89,12 +109,16 @@ func TestUnifiedShadcnTool_Execute_InvalidAction(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_SearchMissingQuery(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": "search",
 	}
 
@@ -105,12 +129,16 @@ func TestUnifiedShadcnTool_Execute_SearchMissingQuery(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_SearchEmptyQuery(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": "search",
 		"query":  "",
 	}
@@ -122,12 +150,16 @@ func TestUnifiedShadcnTool_Execute_SearchEmptyQuery(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_DetailsMissingComponentName(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": "details",
 	}
 
@@ -138,12 +170,16 @@ func TestUnifiedShadcnTool_Execute_DetailsMissingComponentName(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_DetailsEmptyComponentName(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action":        "details",
 		"componentName": "",
 	}
@@ -155,12 +191,16 @@ func TestUnifiedShadcnTool_Execute_DetailsEmptyComponentName(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_ExamplesMissingComponentName(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": "examples",
 	}
 
@@ -171,12 +211,16 @@ func TestUnifiedShadcnTool_Execute_ExamplesMissingComponentName(t *testing.T) {
 }
 
 func TestUnifiedShadcnTool_Execute_ExamplesEmptyComponentName(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action":        "examples",
 		"componentName": "",
 	}
@@ -188,7 +232,7 @@ func TestUnifiedShadcnTool_Execute_ExamplesEmptyComponentName(t *testing.T) {
 }
 
 // Note: Tests that require actual HTTP requests are omitted to avoid external dependencies
-// and nil pointer issues with uninitialized HTTP client. The core parameter validation
+// and nil pointer issues with uninitialised HTTP client. The core parameter validation
 // logic is already tested through the other test functions above.
 
 // Test utility functions and data structures directly
@@ -274,6 +318,10 @@ func TestUnifiedShadcnTool_CacheBehavior(t *testing.T) {
 
 // Test action parameter validation comprehensively
 func TestUnifiedShadcnTool_ActionValidation(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	invalidActions := []string{"invalid", "notfound", "wrong", ""}
 
 	tool := &shadcnui.UnifiedShadcnTool{}
@@ -283,7 +331,7 @@ func TestUnifiedShadcnTool_ActionValidation(t *testing.T) {
 
 	// Test invalid actions (should fail on validation before HTTP calls)
 	for _, action := range invalidActions {
-		args := map[string]interface{}{
+		args := map[string]any{
 			"action": action,
 		}
 
@@ -300,13 +348,17 @@ func TestUnifiedShadcnTool_ActionValidation(t *testing.T) {
 
 // Test parameter type validation
 func TestUnifiedShadcnTool_ParameterTypes(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
 	ctx := testutils.CreateTestContext()
 
 	// Test invalid action type
-	args := map[string]interface{}{
+	args := map[string]any{
 		"action": 123,
 	}
 
@@ -315,7 +367,7 @@ func TestUnifiedShadcnTool_ParameterTypes(t *testing.T) {
 	testutils.AssertErrorContains(t, err, "missing or invalid required parameter: action")
 
 	// Test invalid query type for search
-	args = map[string]interface{}{
+	args = map[string]any{
 		"action": "search",
 		"query":  123,
 	}
@@ -325,7 +377,7 @@ func TestUnifiedShadcnTool_ParameterTypes(t *testing.T) {
 	testutils.AssertErrorContains(t, err, "query parameter is required for search action")
 
 	// Test invalid componentName type for details
-	args = map[string]interface{}{
+	args = map[string]any{
 		"action":        "details",
 		"componentName": 123,
 	}
@@ -335,7 +387,7 @@ func TestUnifiedShadcnTool_ParameterTypes(t *testing.T) {
 	testutils.AssertErrorContains(t, err, "componentName parameter is required for details action")
 
 	// Test invalid componentName type for examples
-	args = map[string]interface{}{
+	args = map[string]any{
 		"action":        "examples",
 		"componentName": []string{"test"},
 	}
@@ -347,6 +399,10 @@ func TestUnifiedShadcnTool_ParameterTypes(t *testing.T) {
 
 // Test edge cases
 func TestUnifiedShadcnTool_EdgeCases(t *testing.T) {
+	// Enable the shadcn tool for testing
+	_ = os.Setenv("ENABLE_ADDITIONAL_TOOLS", "shadcn")
+	defer func() { _ = os.Unsetenv("ENABLE_ADDITIONAL_TOOLS") }()
+
 	tool := &shadcnui.UnifiedShadcnTool{}
 	logger := testutils.CreateTestLogger()
 	cache := testutils.CreateTestCache()
@@ -358,11 +414,120 @@ func TestUnifiedShadcnTool_EdgeCases(t *testing.T) {
 	testutils.AssertErrorContains(t, err, "missing or invalid required parameter: action")
 
 	// Test with empty arguments
-	args := map[string]interface{}{}
+	args := map[string]any{}
 	_, err = tool.Execute(ctx, logger, cache, args)
 	testutils.AssertError(t, err)
 	testutils.AssertErrorContains(t, err, "missing or invalid required parameter: action")
 
 	// Note: Tests for whitespace-only parameters are omitted as they may trigger
 	// HTTP calls depending on the validation logic implementation.
+}
+
+// MockHTTPClient implements HTTPClient for testing rate limiting
+type MockHTTPClient struct {
+	RequestTimes []time.Time
+	mu           sync.Mutex
+}
+
+func (m *MockHTTPClient) Get(url string) (*http.Response, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.RequestTimes = append(m.RequestTimes, time.Now())
+
+	// Return a minimal mock response that won't crash the parser
+	return &http.Response{
+		StatusCode: 200,
+		Body:       http.NoBody,
+	}, nil
+}
+
+func TestRateLimitedHTTPClient_DefaultRateLimit(t *testing.T) {
+	// Test client creation and basic functionality without making actual HTTP requests
+	client := shadcnui.NewRateLimitedHTTPClient()
+	testutils.AssertNotNil(t, client)
+
+	// Just verify the client was created successfully - no need to make real HTTP calls
+}
+
+func TestRateLimitedHTTPClient_CustomRateLimit(t *testing.T) {
+	// Save original environment variable
+	originalValue := os.Getenv("SHADCN_RATE_LIMIT")
+	defer func() {
+		if originalValue == "" {
+			_ = os.Unsetenv("SHADCN_RATE_LIMIT")
+		} else {
+			_ = os.Setenv("SHADCN_RATE_LIMIT", originalValue)
+		}
+	}()
+
+	// Set custom rate limit
+	err := os.Setenv("SHADCN_RATE_LIMIT", "10")
+	if err != nil {
+		t.Fatalf("Failed to set environment variable: %v", err)
+	}
+
+	// Test client creation with custom rate limit
+	client := shadcnui.NewRateLimitedHTTPClient()
+	testutils.AssertNotNil(t, client)
+
+	// Just verify the client was created successfully - no need to make real HTTP calls
+}
+
+func TestRateLimitedHTTPClient_InvalidEnvironmentVariable(t *testing.T) {
+	// Save original environment variable
+	originalValue := os.Getenv("SHADCN_RATE_LIMIT")
+	defer func() {
+		if originalValue == "" {
+			_ = os.Unsetenv("SHADCN_RATE_LIMIT")
+		} else {
+			_ = os.Setenv("SHADCN_RATE_LIMIT", originalValue)
+		}
+	}()
+
+	// Set invalid rate limit (negative number)
+	err := os.Setenv("SHADCN_RATE_LIMIT", "-5")
+	if err != nil {
+		t.Fatalf("Failed to set environment variable: %v", err)
+	}
+
+	// Should fall back to default rate limit
+	client := shadcnui.NewRateLimitedHTTPClient()
+	testutils.AssertNotNil(t, client)
+
+	// Reset to test non-numeric value
+	err = os.Setenv("SHADCN_RATE_LIMIT", "invalid")
+	if err != nil {
+		t.Fatalf("Failed to set environment variable: %v", err)
+	}
+
+	// Should fall back to default rate limit
+	client = shadcnui.NewRateLimitedHTTPClient()
+	testutils.AssertNotNil(t, client)
+}
+
+func TestGetShadcnRateLimit_Function(t *testing.T) {
+	// Save original environment variable
+	originalValue := os.Getenv("SHADCN_RATE_LIMIT")
+	defer func() {
+		if originalValue == "" {
+			_ = os.Unsetenv("SHADCN_RATE_LIMIT")
+		} else {
+			_ = os.Setenv("SHADCN_RATE_LIMIT", originalValue)
+		}
+	}()
+
+	// Test default value
+	_ = os.Unsetenv("SHADCN_RATE_LIMIT")
+	// Can't directly test the function as it's not exported, but we can test through NewRateLimitedHTTPClient
+	client := shadcnui.NewRateLimitedHTTPClient()
+	testutils.AssertNotNil(t, client)
+
+	// Test custom value
+	err := os.Setenv("SHADCN_RATE_LIMIT", "2.5")
+	if err != nil {
+		t.Fatalf("Failed to set environment variable: %v", err)
+	}
+
+	client = shadcnui.NewRateLimitedHTTPClient()
+	testutils.AssertNotNil(t, client)
 }

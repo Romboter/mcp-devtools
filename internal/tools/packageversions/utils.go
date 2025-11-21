@@ -1,16 +1,23 @@
 package packageversions
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/sammcj/mcp-devtools/internal/security"
+	"github.com/sammcj/mcp-devtools/internal/utils/httpclient"
 	"github.com/sirupsen/logrus"
 )
 
@@ -19,11 +26,73 @@ type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-var (
-	// DefaultHTTPClient is the default HTTP client
-	DefaultHTTPClient HTTPClient = &http.Client{
-		Timeout: 30 * time.Second,
+const (
+	// DefaultPackagesRateLimit is the default maximum requests per second
+	DefaultPackagesRateLimit = 10
+	// PackagesRateLimitEnvVar is the environment variable for configuring rate limit
+	PackagesRateLimitEnvVar = "PACKAGES_RATE_LIMIT"
+)
+
+// RateLimitedHTTPClient implements HTTPClient with rate limiting
+type RateLimitedHTTPClient struct {
+	client  *http.Client
+	limiter *rate.Limiter
+}
+
+// getPackagesRateLimit returns the configured rate limit for package requests
+func getPackagesRateLimit() float64 {
+	if envValue := os.Getenv(PackagesRateLimitEnvVar); envValue != "" {
+		if value, err := strconv.ParseFloat(envValue, 64); err == nil && value > 0 {
+			return value
+		}
 	}
+	return DefaultPackagesRateLimit
+}
+
+// NewRateLimitedHTTPClient creates a new rate-limited HTTP client with proxy support
+func NewRateLimitedHTTPClient() *RateLimitedHTTPClient {
+	rateLimit := getPackagesRateLimit()
+
+	// Use shared HTTP client factory with proxy support
+	client := httpclient.NewHTTPClientWithProxy(30 * time.Second)
+
+	// Ensure transport is configured (proxy factory may not set it if no proxy configured)
+	var transport *http.Transport
+	if client.Transport == nil {
+		transport = http.DefaultTransport.(*http.Transport).Clone()
+		client.Transport = transport
+	} else if t, ok := client.Transport.(*http.Transport); ok {
+		transport = t
+	}
+
+	// Configure transport to prevent connection reuse issues with rapid sequential requests
+	if transport != nil {
+		// Disable keep-alives to prevent connection reuse race conditions that can cause
+		// incomplete reads with large package registry responses
+		transport.DisableKeepAlives = true
+	}
+
+	return &RateLimitedHTTPClient{
+		client:  client,
+		limiter: rate.NewLimiter(rate.Limit(rateLimit), 1), // Allow burst of 1
+	}
+}
+
+// Do implements the HTTPClient interface with rate limiting
+func (c *RateLimitedHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	// Wait for rate limiter to allow the request (thread-safe)
+	err := c.limiter.Wait(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	// http.Client.Do is thread-safe and handles concurrent requests properly
+	return c.client.Do(req)
+}
+
+var (
+	// DefaultHTTPClient is the default HTTP client with rate limiting
+	DefaultHTTPClient HTTPClient = NewRateLimitedHTTPClient()
 )
 
 // MakeRequest makes an HTTP request and returns the response body
@@ -32,20 +101,34 @@ func MakeRequest(client HTTPClient, method, url string, headers map[string]strin
 }
 
 // MakeRequestWithLogger makes an HTTP request with logging and returns the response body
-func MakeRequestWithLogger(client HTTPClient, logger *logrus.Logger, method, url string, headers map[string]string) ([]byte, error) {
+func MakeRequestWithLogger(client HTTPClient, logger *logrus.Logger, method, reqURL string, headers map[string]string) ([]byte, error) {
 	if logger != nil {
 		logger.WithFields(logrus.Fields{
 			"method": method,
-			"url":    url,
+			"url":    reqURL,
 		}).Debug("Making HTTP request")
 	}
 
-	req, err := http.NewRequest(method, url, nil)
+	// Parse URL for security checks
+	parsedURL, err := url.Parse(reqURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check domain access control via security system
+	if err := security.CheckDomainAccess(parsedURL.Hostname()); err != nil {
+		if secErr, ok := err.(*security.SecurityError); ok {
+			return nil, security.FormatSecurityBlockError(secErr)
+		}
+		return nil, err
+	}
+
+	req, err := http.NewRequest(method, reqURL, nil)
 	if err != nil {
 		if logger != nil {
 			logger.WithFields(logrus.Fields{
 				"method": method,
-				"url":    url,
+				"url":    reqURL,
 				"error":  err.Error(),
 			}).Error("Failed to create request")
 		}
@@ -65,13 +148,13 @@ func MakeRequestWithLogger(client HTTPClient, logger *logrus.Logger, method, url
 		req.Header.Set("User-Agent", "MCP-DevTools/1.0.0")
 	}
 
-	// Send request
+	// Send request with rate-limited client
 	resp, err := client.Do(req)
 	if err != nil {
 		if logger != nil {
 			logger.WithFields(logrus.Fields{
 				"method": method,
-				"url":    url,
+				"url":    reqURL,
 				"error":  err.Error(),
 			}).Error("Failed to send request")
 		}
@@ -86,36 +169,80 @@ func MakeRequestWithLogger(client HTTPClient, logger *logrus.Logger, method, url
 		}
 	}()
 
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	// Check for HTTP errors
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if logger != nil {
+			logger.WithFields(logrus.Fields{
+				"method":     method,
+				"url":        reqURL,
+				"statusCode": resp.StatusCode,
+			}).Error("Unexpected status code")
+		}
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	// Read response body with size limit to prevent memory exhaustion.
+	// Packages with extensive version histories (e.g., typescript) can exceed 10MB.
+	// The 50MB threshold provides a conservative upper bound
+	// based on observed registry response sizes while protecting against memory exhaustion.
+	limitedReader := io.LimitReader(resp.Body, 50*1024*1024) // 50MB limit
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		if logger != nil {
 			logger.WithFields(logrus.Fields{
 				"method": method,
-				"url":    url,
+				"url":    reqURL,
 				"error":  err.Error(),
 			}).Error("Failed to read response body")
 		}
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Check for errors
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	// Check if response was truncated by attempting to read one more byte
+	extraByte := make([]byte, 1)
+	n, readErr := resp.Body.Read(extraByte)
+	if n > 0 {
+		// Response was truncated - there's more data beyond the 50MB limit
 		if logger != nil {
 			logger.WithFields(logrus.Fields{
-				"method":     method,
-				"url":        url,
-				"statusCode": resp.StatusCode,
-				"body":       string(body),
-			}).Error("Unexpected status code")
+				"method": method,
+				"url":    reqURL,
+			}).Warn("Response body truncated at 50MB limit")
 		}
-		return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, body)
+	} else if readErr != nil && readErr != io.EOF {
+		// Actual read error (not just EOF)
+		if logger != nil {
+			logger.WithFields(logrus.Fields{
+				"method": method,
+				"url":    reqURL,
+				"error":  readErr.Error(),
+			}).Error("Error while checking for response truncation")
+		}
+		return nil, fmt.Errorf("error while checking for response truncation: %w", readErr)
+	}
+
+	// Analyse content for security threats using security helper
+	sourceContext := security.SourceContext{
+		URL:         reqURL,
+		Domain:      parsedURL.Hostname(),
+		ContentType: resp.Header.Get("Content-Type"),
+		Tool:        "packageversions",
+	}
+	if secResult, err := security.AnalyseContent(string(body), sourceContext); err == nil {
+		switch secResult.Action {
+		case security.ActionBlock:
+			return nil, security.FormatSecurityBlockErrorFromResult(secResult)
+		case security.ActionWarn:
+			if logger != nil {
+				logger.Warnf("Security warning [ID: %s]: %s", secResult.ID, secResult.Message)
+			}
+		}
 	}
 
 	if logger != nil {
 		logger.WithFields(logrus.Fields{
 			"method":     method,
-			"url":        url,
+			"url":        reqURL,
 			"statusCode": resp.StatusCode,
 		}).Debug("HTTP request completed successfully")
 	}
@@ -124,7 +251,7 @@ func MakeRequestWithLogger(client HTTPClient, logger *logrus.Logger, method, url
 }
 
 // NewToolResultJSON creates a new tool result with JSON content
-func NewToolResultJSON(data interface{}) (*mcp.CallToolResult, error) {
+func NewToolResultJSON(data any) (*mcp.CallToolResult, error) {
 	jsonBytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
@@ -231,8 +358,22 @@ func StringPtr(s string) *string {
 	return &s
 }
 
+// StringPtrUnlessLatest returns a pointer to the given string unless it equals "latest", in which case it returns nil
+// This is used to avoid including redundant "currentVersion": "latest" fields in package version responses
+func StringPtrUnlessLatest(s string) *string {
+	if s == "latest" {
+		return nil
+	}
+	return &s
+}
+
 // IntPtr returns a pointer to the given int
 func IntPtr(i int) *int {
+	return &i
+}
+
+// Int64Ptr returns a pointer to the given int64
+func Int64Ptr(i int64) *int64 {
 	return &i
 }
 

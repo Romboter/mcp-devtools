@@ -25,16 +25,17 @@ func (t *GradleTool) Definition() mcp.Tool {
 		mcp.WithArray("dependencies",
 			mcp.Description("Array of Gradle dependencies"),
 			mcp.Required(),
+			mcp.Items(map[string]any{"type": "object"}),
 		),
 	)
 }
 
 // Execute executes the tool's logic
-func (t *GradleTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]interface{}) (*mcp.CallToolResult, error) {
+func (t *GradleTool) Execute(ctx context.Context, logger *logrus.Logger, cache *sync.Map, args map[string]any) (*mcp.CallToolResult, error) {
 	logger.Info("Getting latest Gradle package versions")
 
 	// Parse dependencies
-	depsRaw, ok := args["dependencies"].([]interface{})
+	depsRaw, ok := args["dependencies"].([]any)
 	if !ok {
 		return nil, fmt.Errorf("missing required parameter: dependencies")
 	}
@@ -42,7 +43,7 @@ func (t *GradleTool) Execute(ctx context.Context, logger *logrus.Logger, cache *
 	// Convert to GradleDependency
 	var dependencies []packageversions.GradleDependency
 	for _, depRaw := range depsRaw {
-		if depMap, ok := depRaw.(map[string]interface{}); ok {
+		if depMap, ok := depRaw.(map[string]any); ok {
 			var dep packageversions.GradleDependency
 
 			// Parse configuration
@@ -76,16 +77,12 @@ func (t *GradleTool) Execute(ctx context.Context, logger *logrus.Logger, cache *
 	}
 
 	// Get latest versions
-	results, err := t.getLatestVersions(logger, cache, dependencies)
-	if err != nil {
-		return nil, err
-	}
-
+	results := t.getLatestVersions(logger, cache, dependencies)
 	return packageversions.NewToolResultJSON(results)
 }
 
 // getLatestVersions gets the latest versions for Gradle packages
-func (t *GradleTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, dependencies []packageversions.GradleDependency) ([]packageversions.PackageVersion, error) {
+func (t *GradleTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, dependencies []packageversions.GradleDependency) []packageversions.PackageVersion {
 	var results []packageversions.PackageVersion
 
 	// Create a Maven tool to reuse its functionality
@@ -107,7 +104,7 @@ func (t *GradleTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, d
 		if cachedVersion, ok := cache.Load(cacheKey); ok {
 			logger.WithField("package", packageName).Debug("Using cached Gradle package version")
 			result := cachedVersion.(packageversions.PackageVersion)
-			result.CurrentVersion = packageversions.StringPtr(dep.Version)
+			result.CurrentVersion = packageversions.StringPtrUnlessLatest(dep.Version)
 			results = append(results, result)
 			continue
 		}
@@ -121,7 +118,7 @@ func (t *GradleTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, d
 			}).Error("Failed to get Gradle package version")
 			results = append(results, packageversions.PackageVersion{
 				Name:           packageName,
-				CurrentVersion: packageversions.StringPtr(dep.Version),
+				CurrentVersion: packageversions.StringPtrUnlessLatest(dep.Version),
 				LatestVersion:  "unknown",
 				Registry:       "gradle",
 				Skipped:        true,
@@ -133,7 +130,7 @@ func (t *GradleTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, d
 		// Create result
 		result := packageversions.PackageVersion{
 			Name:           packageName,
-			CurrentVersion: packageversions.StringPtr(dep.Version),
+			CurrentVersion: packageversions.StringPtrUnlessLatest(dep.Version),
 			LatestVersion:  latestVersion,
 			Registry:       "gradle",
 		}
@@ -149,5 +146,5 @@ func (t *GradleTool) getLatestVersions(logger *logrus.Logger, cache *sync.Map, d
 		return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
 	})
 
-	return results, nil
+	return results
 }
